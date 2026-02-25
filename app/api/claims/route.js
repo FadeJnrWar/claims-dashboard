@@ -4,6 +4,10 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 async function getSheetData() {
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64) {
+    return [];
+  }
+
   const credentials = JSON.parse(
     Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64, "base64").toString()
   );
