@@ -1,26 +1,25 @@
 import { google } from "googleapis";
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 async function getSheetData() {
+  const credentials = JSON.parse(
+    Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64, "base64").toString()
+  );
+
   const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-    },
+    credentials,
     scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
   });
 
   const sheets = google.sheets({ version: "v4", auth });
-  const sheetId = process.env.GOOGLE_SHEET_ID;
-
   const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
     range: "Raw Data!A:D",
   });
-
   const rows = response.data.values;
   if (!rows || rows.length < 2) return [];
-
   return rows.slice(1).map((row) => ({
     unique_key: row[0] || "",
     date: row[1] || "",
