@@ -25,16 +25,22 @@ const fmt = (n) => n?.toLocaleString() ?? "0";
 const pct = (n, t) => t ? ((n / t) * 100).toFixed(1) : "0.0";
 const pctChange = (cur, prev) => prev === 0 ? (cur > 0 ? 100 : 0) : ((cur - prev) / prev * 100);
 
-/* ── week helpers ──────────────────────────────────────── */
+/* ── week helpers (safe — guards against Invalid Date) ── */
+const safeDateStr = (dt) => {
+  try { return (dt instanceof Date && !isNaN(dt.getTime())) ? dt.toISOString().split("T")[0] : ""; }
+  catch { return ""; }
+};
 const getWeekNumber = (d) => {
-  const date = new Date(d); date.setHours(0,0,0,0);
+  const date = new Date(d); if (isNaN(date.getTime())) return 0;
+  date.setHours(0,0,0,0);
   date.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
   const w1 = new Date(date.getFullYear(), 0, 4);
   return Math.round(((date - w1) / 86400000 - 3 + ((w1.getDay() + 6) % 7)) / 7) + 1;
 };
 const getMonday = (d) => {
-  const date = new Date(d); const day = date.getDay();
-  return new Date(date.setDate(date.getDate() - day + (day === 0 ? -6 : 1))).toISOString().split("T")[0];
+  const date = new Date(d); if (isNaN(date.getTime())) return d || "";
+  const day = date.getDay();
+  return safeDateStr(new Date(date.setDate(date.getDate() - day + (day === 0 ? -6 : 1))));
 };
 
 /* ── shared components ──────────────────────────────────── */
@@ -147,12 +153,15 @@ export default function Dashboard() {
       if (json.success) {
         setRawData(json.data);
         setLastUpdate(json.updated_at);
-        const dates = [...new Set(json.data.map(r => r.date))].sort();
+        const dates = [...new Set(json.data.map(r => r.date).filter(Boolean))].sort();
         if (dates.length) {
-          setStartDate(dates[Math.max(0, dates.length - 30)]);
-          setEndDate(dates[dates.length - 1]);
+          const start = dates[Math.max(0, dates.length - 30)];
+          const end = dates[dates.length - 1];
+          console.log(`[Claims] ${json.data.length} records, ${dates.length} unique dates: ${dates[0]} → ${end}, showing from ${start}`);
+          setStartDate(start);
+          setEndDate(end);
         }
-        const ins = new Set(json.data.map(r => r.insurer));
+        const ins = new Set(json.data.map(r => r.insurer).filter(Boolean));
         setSelected(ins);
         setCompInsurers(new Set(ins));
       } else setError(json.error);
@@ -222,14 +231,17 @@ export default function Dashboard() {
     if (compMonths.size === 0 && availableMonths.length > 0)
       setCompMonths(new Set(availableMonths.slice(-3)));
     if (customPeriods.length === 0 && dateRange.max) {
-      const end = new Date(dateRange.max + "T00:00:00");
-      const p2start = new Date(end); p2start.setDate(p2start.getDate() - 6);
-      const p1end = new Date(p2start); p1end.setDate(p1end.getDate() - 1);
-      const p1start = new Date(p1end); p1start.setDate(p1start.getDate() - 6);
-      setCustomPeriods([
-        { id: 1, from: p1start.toISOString().split("T")[0], to: p1end.toISOString().split("T")[0], label: "Previous Period" },
-        { id: 2, from: p2start.toISOString().split("T")[0], to: end.toISOString().split("T")[0], label: "Current Period" },
-      ]);
+      try {
+        const end = new Date(dateRange.max + "T00:00:00");
+        if (isNaN(end.getTime())) return;
+        const p2start = new Date(end); p2start.setDate(p2start.getDate() - 6);
+        const p1end = new Date(p2start); p1end.setDate(p1end.getDate() - 1);
+        const p1start = new Date(p1end); p1start.setDate(p1start.getDate() - 6);
+        setCustomPeriods([
+          { id: 1, from: safeDateStr(p1start), to: safeDateStr(p1end), label: "Previous Period" },
+          { id: 2, from: safeDateStr(p2start), to: safeDateStr(end), label: "Current Period" },
+        ]);
+      } catch (e) { console.warn("[Claims] Compare date init error:", e); }
     }
   }, [availableMonths, dateRange]);
 
@@ -343,8 +355,8 @@ export default function Dashboard() {
   };
 
   /* ── report helpers ────────────────────────────────── */
-  const d = (s) => new Date(s + "T00:00:00");
-  const ds = (dt) => dt.toISOString().split("T")[0];
+  const d = (s) => { const dt = new Date(s + "T00:00:00"); return isNaN(dt.getTime()) ? new Date() : dt; };
+  const ds = (dt) => safeDateStr(dt);
   const addDays = (dt, n) => { const r = new Date(dt); r.setDate(r.getDate() + n); return r; };
 
   const getReportPresets = () => {
