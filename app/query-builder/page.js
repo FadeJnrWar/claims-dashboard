@@ -1,1251 +1,546 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback } from "react";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, LineChart, Line, Legend, PieChart, Pie, Cell,
-  AreaChart, Area,
-} from "recharts";
+import { useState, useMemo, useEffect } from "react";
+import Link from "next/link";
 
-/* ── colour tokens ──────────────────────────────────────── */
+/* ─── colour tokens (matched from main dashboard) ─────────── */
 const C = {
   accent: "#00E5A0", accentDim: "#00B87D",
   bg: "#0B0F1A", card: "#111827", elevated: "#1A2332",
   border: "#1E2D3D", text: "#F0F4F8", sub: "#8899AA", muted: "#556677",
   danger: "#FF5C5C", warn: "#FFB84D", success: "#34D399",
-  chart: [
-    "#00E5A0","#FF6B8A","#5B8DEF","#FFB84D","#A78BFA",
-    "#F472B6","#34D399","#F59E0B","#EF4444","#8B5CF6",
-    "#EC4899","#14B8A6","#6366F1","#F97316","#06B6D4","#84CC16",
-  ],
-  periods: ["#00E5A0","#5B8DEF","#FF6B8A","#FFB84D","#A78BFA"],
+  purple: "#A78BFA", purpleDim: "#7C3AED",
+  blue: "#60A5FA", blueDim: "#3B82F6",
+  code: { bg: "#0D1117", text: "#E6EDF3", kw: "#CBA6F7", str: "#A6E3A1", num: "#FAB387", col: "#89B4FA", comment: "#6C7086" },
 };
 
-const fmt = (n) => n?.toLocaleString() ?? "0";
-const pct = (n, t) => t ? ((n / t) * 100).toFixed(1) : "0.0";
-const pctChange = (cur, prev) => prev === 0 ? (cur > 0 ? 100 : 0) : ((cur - prev) / prev * 100);
+/* ─── Utilities ────────────────────────────────────────────── */
+function esc(str) { return str ? String(str).replace(/'/g, "''") : ""; }
+function isNum(v) { return v !== "" && v !== undefined && v !== null && !isNaN(Number(v)); }
 
-/* ── week helpers ──────────────────────────────────────── */
-const getWeekNumber = (d) => {
-  const date = new Date(d); date.setHours(0,0,0,0);
-  date.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
-  const w1 = new Date(date.getFullYear(), 0, 4);
-  return Math.round(((date - w1) / 86400000 - 3 + ((w1.getDay() + 6) % 7)) / 7) + 1;
+/* ─── SQL Syntax Highlighter ───────────────────────────────── */
+function highlightSQL(sql) {
+  const kws = ["SELECT","FROM","LEFT JOIN","RIGHT JOIN","INNER JOIN","CROSS JOIN","JOIN","ON","WHERE","AND","OR","AS","IS","NOT","NULL","IN","LIKE","BETWEEN","ORDER BY","GROUP BY","HAVING","LIMIT","CONCAT","TIMESTAMPDIFF","YEAR","CURDATE","NOW","DATE_ADD","DATE_SUB","INTERVAL","COUNT","SUM","AVG","MAX","MIN","DISTINCT","CASE","WHEN","THEN","ELSE","END","COALESCE","IFNULL","IF","NULLIF","EXISTS","WITH","DESC","ASC","CAST","UNSIGNED","SUBSTRING","JSON_EXTRACT","JSON_UNQUOTE","GROUP_CONCAT","SEPARATOR","CONCAT_WS","DAY"];
+  let r = sql.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  r = r.replace(/'([^']*)'/g, `<span style="color:${C.code.str}">'$1'</span>`);
+  r = r.replace(/\b(\d+\.?\d*)\b/g, `<span style="color:${C.code.num}">$1</span>`);
+  kws.forEach(kw => { r = r.replace(new RegExp(`\\b${kw}\\b`,"gi"), m => `<span style="color:${C.code.kw};font-weight:600">${m.toUpperCase()}</span>`); });
+  r = r.replace(/`([^`]*)`/g, `<span style="color:${C.code.col}">\`$1\`</span>`);
+  r = r.replace(/(--.*$)/gm, `<span style="color:${C.code.comment};font-style:italic">$1</span>`);
+  return r;
+}
+
+/* ─── Status Maps ──────────────────────────────────────────── */
+const STATUS_MAPS = {
+  hmo_status: { label: "HMO Status", values: { "-1": "Rejected", "0": "Pending", "1": "Approved" } },
+  provider_status: { label: "Provider Status", values: { "-1": "Draft", "0": "Pending", "1": "Submitted" } },
 };
-const getMonday = (d) => {
-  const date = new Date(d); const day = date.getDay();
-  return new Date(date.setDate(date.getDate() - day + (day === 0 ? -6 : 1))).toISOString().split("T")[0];
-};
 
-/* ── shared components ──────────────────────────────────── */
-function StatCard({ label, value, sub, icon, color = C.accent, delay = 0 }) {
-  return (
-    <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "20px 24px", flex: 1, minWidth: 170, position: "relative", overflow: "hidden", animation: `slideUp .5s ease ${delay}s both` }}>
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: `linear-gradient(90deg,${color},transparent)` }}/>
-      <div style={{ fontSize: 12, color: C.sub, marginBottom: 6, letterSpacing: .5, textTransform: "uppercase", fontWeight: 500 }}>{icon} {label}</div>
-      <div style={{ fontSize: 30, fontWeight: 700, color: C.text, fontFamily: "'JetBrains Mono',monospace", letterSpacing: -1 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{sub}</div>}
-    </div>
-  );
+const HMO_LIST = [
+  { id: 73, name: "UAP Old Mutual (Uganda)" }, { id: 4, name: "UAP (Legacy ID)" },
+  { id: 38, name: "HMO Partner 38" }, { id: 74, name: "Jubilee Health (Kenya)" },
+  { id: 75, name: "Jubilee Health (Tanzania)" }, { id: 76, name: "AXA Mansard" },
+  { id: 77, name: "Cornerstone Insurance" }, { id: 78, name: "Universal Insurance" },
+  { id: 0, name: "— Enter Custom ID —" },
+];
+
+/* ─── Query Safety ─────────────────────────────────────────── */
+const LIMIT = 1000;
+const HEAVY = new Set(["full_claims_extract","claims_summary","erp_detail_list","tariff_full_export","tariff_with_variations","v1_with_variations","todays_claims"]);
+function isExpensive(key, f) {
+  if (!HEAVY.has(key)) return false;
+  return !(f.hmo_id && f.hmo_id !== "" && f.hmo_id !== "0") && !(f.date_from && f.date_to);
 }
 
-function Tip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", boxShadow: "0 8px 32px rgba(0,0,0,.5)" }}>
-      <div style={{ fontSize: 11, color: C.accent, fontWeight: 600, marginBottom: 5 }}>{label}</div>
-      {payload.map((p, i) => (
-        <div key={i} style={{ fontSize: 11, color: C.sub, display: "flex", gap: 8, alignItems: "center", marginBottom: 2 }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.color, flexShrink: 0 }}/>
-          <span style={{ flex: 1, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name || p.dataKey}</span>
-          <span style={{ fontWeight: 600, color: C.text, fontFamily: "monospace" }}>{fmt(p.value)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
+/* ─── Schema Context for AI ────────────────────────────────── */
+const SCHEMA_CONTEXT = `You are a MySQL query generator for Curacel's health insurance platform. Generate ONLY the SQL query, no explanation.
 
-function Delta({ value, small }) {
-  if (value === null || value === undefined || isNaN(value)) return <span style={{ color: C.muted, fontSize: small ? 10 : 12 }}>—</span>;
-  const pos = value > 0, neutral = Math.abs(value) < 0.5;
-  const color = neutral ? C.muted : pos ? C.success : C.danger;
-  const arrow = neutral ? "→" : pos ? "↑" : "↓";
-  return <span style={{ color, fontSize: small ? 10 : 12, fontWeight: 600, fontFamily: "monospace" }}>{arrow} {Math.abs(value).toFixed(1)}%</span>;
-}
+DATABASE SCHEMA:
+1. claims (5.3M rows) - id, hmo_id, provider_id, enrollee_id, encounter_date, total_amount, approved_amount, provider_status (0=Pending,1=Submitted,-1=Draft), hmo_status (0=Pending,1=Approved,-1=Rejected), hmo_erp_id, created_at, submitted_at, vetted_at, has_unmatched_tariff, hmo_pile_id, approval_code, entry_point
+2. claim_items (24.7M rows) - id, claim_id, care_id, tariff_id, description, qty, amount, approved_amount, approved_qty, comment_id, hmo_approved
+3. provider_tariffs (18.9M rows) - id, hmo_id, provider_id, care_id, care_variation_id, desc, amount, flagged_as_correct_at, created_at
+4. cares (398K rows) - id, name, type, type_id (1=medications), cve_version (2=V2), active
+5. care_variations (30K rows) - id, care_id, meta (JSON: $.strength, $.drug_form_id)
+6. enrollees (2M rows) - id, hmo_id, insurance_no, firstname, lastname, birthdate, sex, status
+7. providers (9.8K rows) - id, name, email, state
+8. hmos (167 rows) - id, name, code, country_id
+Related: claim_item_comments (id, name), drug_forms (id, name)
 
-function Checkbox({ checked, onChange, label, color = C.accent }) {
-  return (
-    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12, color: checked ? C.text : C.muted, padding: "4px 0", userSelect: "none" }} onClick={onChange}>
-      <div style={{
-        width: 18, height: 18, borderRadius: 4, border: `2px solid ${checked ? color : C.border}`,
-        background: checked ? color : "transparent", display: "flex", alignItems: "center", justifyContent: "center",
-        transition: "all .15s", flexShrink: 0,
-      }}>
-        {checked && <span style={{ color: C.bg, fontSize: 12, fontWeight: 700, lineHeight: 1 }}>✓</span>}
-      </div>
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-    </label>
-  );
-}
+RULES: Use backticks, LEFT JOINs by default, LIMIT 1000 unless aggregation, >= start AND < end for dates, ORDER BY newest first. Return ONLY SQL.`;
 
-/* ═══════════ MAIN DASHBOARD ═══════════════════════════════ */
-export default function Dashboard() {
-  /* ── data state ─────────────────────────────────────── */
-  const [rawData, setRawData] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [lastUpdate, setLastUpdate] = useState(null);
-
-  /* ── filter state ───────────────────────────────────── */
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [selected, setSelected] = useState(new Set());
-  const [view, setView] = useState("overview");
-  const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState("claims");
-  const [sortDir, setSortDir] = useState("desc");
-
-  /* ── slack state ────────────────────────────────────── */
-  const [showSlack, setShowSlack] = useState(false);
-  const [slackSent, setSlackSent] = useState(false);
-  const [slackChans, setSlackChans] = useState(new Set(["#health-ops"]));
-  const [slackInsurers, setSlackInsurers] = useState(new Set());
-  const [slackResults, setSlackResults] = useState([]);
-  const [sending, setSending] = useState(false);
-
-  /* ── compare state ──────────────────────────────────── */
-  const [compMode, setCompMode] = useState("month");
-  const [compMonths, setCompMonths] = useState(new Set());
-  const [customPeriods, setCustomPeriods] = useState([]);
-  const [compInsurers, setCompInsurers] = useState(new Set());
-  const [compView, setCompView] = useState("overview");
-  const [monthRangeFrom, setMonthRangeFrom] = useState("");
-  const [monthRangeTo, setMonthRangeTo] = useState("");
-  const [newPeriodFrom, setNewPeriodFrom] = useState("");
-  const [newPeriodTo, setNewPeriodTo] = useState("");
-  const [newPeriodLabel, setNewPeriodLabel] = useState("");
-
-  /* ── report state ──────────────────────────────────── */
-  const [showReport, setShowReport] = useState(false);
-  const [reportType, setReportType] = useState("mom");
-  const [reportPeriods, setReportPeriods] = useState([]);
-  const [reportChans, setReportChans] = useState(new Set(["#health-ops"]));
-  const [reportInsurers, setReportInsurers] = useState(new Set());
-  const [reportSending, setReportSending] = useState(false);
-  const [reportSent, setReportSent] = useState(false);
-  const [reportResults, setReportResults] = useState([]);
-  const [reportCustomFrom, setReportCustomFrom] = useState("");
-  const [reportCustomTo, setReportCustomTo] = useState("");
-  const [reportCustomLabel, setReportCustomLabel] = useState("");
-
-  /* ── fetch data ─────────────────────────────────────── */
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      const res = await fetch("/api/claims");
-      const json = await res.json();
-      if (json.success) {
-        setRawData(json.data);
-        setLastUpdate(json.updated_at);
-        const dates = [...new Set(json.data.map(r => r.date))].sort();
-        if (dates.length) {
-          setStartDate(dates[Math.max(0, dates.length - 30)]);
-          setEndDate(dates[dates.length - 1]);
-        }
-        const ins = new Set(json.data.map(r => r.insurer));
-        setSelected(ins);
-        setCompInsurers(new Set(ins));
-      } else setError(json.error);
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
-
-  /* ── derived: main views ────────────────────────────── */
-  const allInsurers = useMemo(() => [...new Set(rawData.map(r => r.insurer))].sort(), [rawData]);
-
-  const filtered = useMemo(() =>
-    rawData.filter(r => r.date >= startDate && r.date <= endDate && selected.has(r.insurer)),
-  [rawData, startDate, endDate, selected]);
-
-  const dailyTotals = useMemo(() => {
-    const m = {};
-    filtered.forEach(r => { m[r.date] = (m[r.date] || 0) + r.claims_count; });
-    return Object.entries(m).sort(([a],[b]) => a.localeCompare(b)).map(([date,total]) => ({ date, total }));
-  }, [filtered]);
-
-  const insurerTotals = useMemo(() => {
-    const m = {};
-    filtered.forEach(r => {
-      if (!m[r.insurer]) m[r.insurer] = { insurer: r.insurer, total: 0, days: 0 };
-      m[r.insurer].total += r.claims_count;
-      if (r.claims_count > 0) m[r.insurer].days++;
-    });
-    const arr = Object.values(m);
-    arr.sort((a, b) => sortBy === "claims"
-      ? (sortDir === "desc" ? b.total - a.total : a.total - b.total)
-      : (sortDir === "desc" ? b.insurer.localeCompare(a.insurer) : a.insurer.localeCompare(b.insurer)));
-    return arr;
-  }, [filtered, sortBy, sortDir]);
-
-  const total = useMemo(() => filtered.reduce((s, r) => s + r.claims_count, 0), [filtered]);
-  const avg = dailyTotals.length ? Math.round(total / dailyTotals.length) : 0;
-  const peak = dailyTotals.reduce((mx, d) => d.total > (mx?.total || 0) ? d : mx, null);
-
-  const trendData = useMemo(() => {
-    const m = {};
-    filtered.forEach(r => { if (!m[r.date]) m[r.date] = { date: r.date }; m[r.date][r.insurer] = r.claims_count; });
-    return Object.values(m).sort((a, b) => a.date.localeCompare(b.date));
-  }, [filtered]);
-
-  const pivot = useMemo(() => {
-    const dates = [...new Set(filtered.map(r => r.date))].sort();
-    const ins = [...selected].sort();
-    const m = {};
-    filtered.forEach(r => { m[`${r.date}_${r.insurer}`] = r.claims_count; });
-    return { dates, insurers: ins, map: m };
-  }, [filtered, selected]);
-
-  /* ── derived: compare mode ──────────────────────────── */
-  const availableMonths = useMemo(() => {
-    const s = new Set(); rawData.forEach(r => s.add(r.date.slice(0, 7))); return [...s].sort();
-  }, [rawData]);
-
-  const dateRange = useMemo(() => {
-    const dates = rawData.map(r => r.date).filter(Boolean).sort();
-    return { min: dates[0] || "", max: dates[dates.length - 1] || "" };
-  }, [rawData]);
-
-  // Auto-select defaults for compare
-  useEffect(() => {
-    if (compMonths.size === 0 && availableMonths.length > 0)
-      setCompMonths(new Set(availableMonths.slice(-3)));
-    if (customPeriods.length === 0 && dateRange.max) {
-      const end = new Date(dateRange.max + "T00:00:00");
-      const p2start = new Date(end); p2start.setDate(p2start.getDate() - 6);
-      const p1end = new Date(p2start); p1end.setDate(p1end.getDate() - 1);
-      const p1start = new Date(p1end); p1start.setDate(p1start.getDate() - 6);
-      setCustomPeriods([
-        { id: 1, from: p1start.toISOString().split("T")[0], to: p1end.toISOString().split("T")[0], label: "Previous Period" },
-        { id: 2, from: p2start.toISOString().split("T")[0], to: end.toISOString().split("T")[0], label: "Current Period" },
-      ]);
-    }
-  }, [availableMonths, dateRange]);
-
-  const compFilteredData = useMemo(() =>
-    rawData.filter(r => compInsurers.has(r.insurer)),
-  [rawData, compInsurers]);
-
-  const monthCompData = useMemo(() => {
-    const months = [...compMonths].sort();
-    return months.map((month, idx) => {
-      const records = compFilteredData.filter(r => r.date.startsWith(month));
-      const totalVal = records.reduce((s, r) => s + r.claims_count, 0);
-      const days = [...new Set(records.map(r => r.date))].length;
-      const avgVal = days ? Math.round(totalVal / days) : 0;
-      const byInsurer = {};
-      records.forEach(r => { byInsurer[r.insurer] = (byInsurer[r.insurer] || 0) + r.claims_count; });
-      const daily = {};
-      records.forEach(r => { const d = parseInt(r.date.split("-")[2]); daily[d] = (daily[d] || 0) + r.claims_count; });
-      return { month, total: totalVal, avg: avgVal, days, byInsurer, daily, color: C.periods[idx % C.periods.length] };
-    });
-  }, [compFilteredData, compMonths]);
-
-  const customCompData = useMemo(() => {
-    const sorted = [...customPeriods].sort((a, b) => a.from.localeCompare(b.from));
-    return sorted.map((p, idx) => {
-      const records = compFilteredData.filter(r => r.date >= p.from && r.date <= p.to);
-      const totalVal = records.reduce((s, r) => s + r.claims_count, 0);
-      const days = [...new Set(records.map(r => r.date))].length;
-      const avgVal = days ? Math.round(totalVal / days) : 0;
-      const byInsurer = {};
-      records.forEach(r => { byInsurer[r.insurer] = (byInsurer[r.insurer] || 0) + r.claims_count; });
-      const daily = {};
-      records.forEach(r => {
-        const dayNum = Math.floor((new Date(r.date) - new Date(p.from)) / 86400000) + 1;
-        daily[`Day ${dayNum}`] = (daily[`Day ${dayNum}`] || 0) + r.claims_count;
-      });
-      const label = p.label || `${new Date(p.from).toLocaleDateString("en",{month:"short",day:"numeric"})} → ${new Date(p.to).toLocaleDateString("en",{month:"short",day:"numeric"})}`;
-      return { ...p, label, total: totalVal, avg: avgVal, days, byInsurer, daily, color: C.periods[idx % C.periods.length] };
-    });
-  }, [compFilteredData, customPeriods]);
-
-  const compPeriods = compMode === "month" ? monthCompData : customCompData;
-  const compWithDeltas = compPeriods.map((p, i) => ({
-    ...p,
-    delta: i > 0 ? pctChange(p.total, compPeriods[i-1].total) : null,
-    avgDelta: i > 0 ? pctChange(p.avg, compPeriods[i-1].avg) : null,
-  }));
-
-  const compOverlayData = useMemo(() => {
-    if (compMode === "month") {
-      return Array.from({length:31},(_,i)=>i+1).map(day => {
-        const pt = { day: `Day ${day}` };
-        monthCompData.forEach(m => { pt[m.month] = m.daily[day] || 0; });
-        return pt;
-      }).filter(p => monthCompData.some(m => (p[m.month] || 0) > 0));
-    } else {
-      const maxDays = Math.max(...customCompData.map(p => p.days), 1);
-      return Array.from({length: maxDays}, (_, i) => {
-        const pt = { day: `Day ${i + 1}` };
-        customCompData.forEach(p => { pt[p.label] = p.daily[`Day ${i + 1}`] || 0; });
-        return pt;
-      });
-    }
-  }, [compMode, monthCompData, customCompData]);
-
-  const compInsurerTable = useMemo(() => {
-    const activeIns = [...compInsurers].sort();
-    return activeIns.map(ins => {
-      const row = { insurer: ins };
-      compPeriods.forEach((p, i) => {
-        const key = compMode === "month" ? p.month : p.label;
-        row[key] = p.byInsurer[ins] || 0;
-        if (i > 0) {
-          const prev = compPeriods[i-1].byInsurer[ins] || 0;
-          row[`${key}_delta`] = pctChange(row[key], prev);
-        }
-      });
-      return row;
-    }).sort((a, b) => {
-      const lk = compMode === "month" ? compPeriods[compPeriods.length-1]?.month : compPeriods[compPeriods.length-1]?.label;
-      return (b[lk] || 0) - (a[lk] || 0);
-    });
-  }, [compInsurers, compPeriods, compMode]);
-
-  /* ── actions ────────────────────────────────────────── */
-  const toggle = (name) => { const n = new Set(selected); n.has(name) ? n.delete(name) : n.add(name); setSelected(n); };
-
-  const toggleCompMonth = (m) => {
-    const n = new Set(compMonths);
-    n.has(m) ? n.delete(m) : n.add(m);
-    if (n.size > 0) setCompMonths(n);
-  };
-  const addCustomPeriod = () => {
-    if (!newPeriodFrom || !newPeriodTo) return;
-    const [f, t] = [newPeriodFrom, newPeriodTo].sort();
-    const label = newPeriodLabel || `${new Date(f).toLocaleDateString("en",{month:"short",day:"numeric"})} → ${new Date(t).toLocaleDateString("en",{month:"short",day:"numeric"})}`;
-    setCustomPeriods(prev => [...prev, { id: Date.now(), from: f, to: t, label }]);
-    setNewPeriodFrom(""); setNewPeriodTo(""); setNewPeriodLabel("");
-  };
-  const removeCustomPeriod = (id) => {
-    setCustomPeriods(prev => prev.filter(p => p.id !== id));
-  };
-
-  const applyMonthRange = (from, to) => {
-    if (!from || !to) return;
-    const [f, t] = [from, to].sort();
-    setCompMonths(new Set(availableMonths.filter(m => m >= f && m <= t)));
-  };
-  const toggleCompInsurer = (ins) => {
-    const n = new Set(compInsurers); n.has(ins) ? n.delete(ins) : n.add(ins); setCompInsurers(n);
-  };
-
-  /* ── report helpers ────────────────────────────────── */
-  const d = (s) => new Date(s + "T00:00:00");
-  const ds = (dt) => dt.toISOString().split("T")[0];
-  const addDays = (dt, n) => { const r = new Date(dt); r.setDate(r.getDate() + n); return r; };
-
-  const getReportPresets = () => {
-    if (!dateRange.max) return [];
-    const today = d(dateRange.max);
-    const thisMonday = addDays(today, -(today.getDay() === 0 ? 6 : today.getDay() - 1));
-    const lastMonday = addDays(thisMonday, -7);
-    const lastSunday = addDays(thisMonday, -1);
-    const thisMonth = dateRange.max.slice(0, 7);
-    const lastMonthDt = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const lastMonth = `${lastMonthDt.getFullYear()}-${String(lastMonthDt.getMonth()+1).padStart(2,"0")}`;
-    const prevMonthDt = new Date(today.getFullYear(), today.getMonth() - 2, 1);
-    const prevMonth = `${prevMonthDt.getFullYear()}-${String(prevMonthDt.getMonth()+1).padStart(2,"0")}`;
-    const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
-    const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const prevMonthEnd = new Date(today.getFullYear(), today.getMonth() - 1, 0);
-    const prevMonthStart = new Date(today.getFullYear(), today.getMonth() - 2, 1);
-
-    return {
-      weekly: [
-        { id: 1, from: ds(lastMonday), to: ds(lastSunday), label: "Last Week" },
-      ],
-      wow: [
-        { id: 1, from: ds(addDays(lastMonday, -7)), to: ds(addDays(lastMonday, -1)), label: "2 Weeks Ago" },
-        { id: 2, from: ds(lastMonday), to: ds(lastSunday), label: "Last Week" },
-      ],
-      monthly: [
-        { id: 1, from: ds(lastMonthStart), to: ds(lastMonthEnd), label: new Date(lastMonth+"-15").toLocaleDateString("en",{month:"long",year:"numeric"}) },
-      ],
-      mom: [
-        { id: 1, from: ds(prevMonthStart), to: ds(prevMonthEnd), label: new Date(prevMonth+"-15").toLocaleDateString("en",{month:"long",year:"numeric"}) },
-        { id: 2, from: ds(lastMonthStart), to: ds(lastMonthEnd), label: new Date(lastMonth+"-15").toLocaleDateString("en",{month:"long",year:"numeric"}) },
-      ],
-      monthweek: [
-        { id: 1, from: ds(lastMonthStart), to: ds(lastMonthEnd), label: new Date(lastMonth+"-15").toLocaleDateString("en",{month:"long",year:"numeric"}) },
-        { id: 2, from: ds(lastMonday), to: ds(lastSunday), label: "Last Week" },
-      ],
-    };
-  };
-
-  const openReport = () => {
-    const presets = getReportPresets();
-    setReportType("mom");
-    setReportPeriods(presets.mom || []);
-    setReportInsurers(new Set(allInsurers));
-    setReportSent(false); setReportResults([]);
-    setReportCustomFrom(""); setReportCustomTo(""); setReportCustomLabel("");
-    setShowReport(true);
-  };
-
-  const applyReportPreset = (type) => {
-    setReportType(type);
-    const presets = getReportPresets();
-    if (type === "custom") {
-      // don't clear periods, let user build them
-    } else {
-      setReportPeriods(presets[type] || []);
-    }
-  };
-
-  const addReportPeriod = () => {
-    if (!reportCustomFrom || !reportCustomTo) return;
-    const [f, t] = [reportCustomFrom, reportCustomTo].sort();
-    const label = reportCustomLabel || `${new Date(f).toLocaleDateString("en",{month:"short",day:"numeric"})} → ${new Date(t).toLocaleDateString("en",{month:"short",day:"numeric"})}`;
-    setReportPeriods(prev => [...prev, { id: Date.now(), from: f, to: t, label }]);
-    setReportCustomFrom(""); setReportCustomTo(""); setReportCustomLabel("");
-  };
-
-  const reportComputed = useMemo(() => {
-    const rFiltered = rawData.filter(r => reportInsurers.has(r.insurer));
-    return [...reportPeriods].sort((a, b) => a.from.localeCompare(b.from)).map((p, idx) => {
-      const records = rFiltered.filter(r => r.date >= p.from && r.date <= p.to);
-      const totalVal = records.reduce((s, r) => s + r.claims_count, 0);
-      const days = [...new Set(records.map(r => r.date))].length;
-      const avgVal = days ? Math.round(totalVal / days) : 0;
-      const byInsurer = {};
-      records.forEach(r => { byInsurer[r.insurer] = (byInsurer[r.insurer] || 0) + r.claims_count; });
-      return { ...p, total: totalVal, avg: avgVal, days, byInsurer };
-    });
-  }, [rawData, reportPeriods, reportInsurers]);
-
-  const sendReport = async () => {
-    setReportSending(true);
-    const periods = reportComputed;
-    const hasDelta = periods.length > 1;
-
-    const lines = [`📋 *Claims Intelligence Report*`, ``];
-
-    periods.forEach((p, i) => {
-      lines.push(`*${p.label}* (${p.from} → ${p.to})`);
-      lines.push(`  🏥 Total Claims: *${fmt(p.total)}*`);
-      lines.push(`  📊 Daily Avg: *${fmt(p.avg)}* | ${p.days} days`);
-      if (i > 0 && hasDelta) {
-        const prev = periods[i-1];
-        const delta = pctChange(p.total, prev.total);
-        const arrow = delta > 0 ? "📈" : delta < 0 ? "📉" : "➡️";
-        lines.push(`  ${arrow} Change: *${delta > 0 ? "+" : ""}${delta.toFixed(1)}%* vs ${prev.label}`);
+/* ─── Playbook Templates ───────────────────────────────────── */
+const CATS = {
+  ai_assistant: { name: "AI Assistant", icon: "🤖", desc: "Describe what you need in plain English", templates: {} },
+  claims_reports: { name: "Claims Reports", icon: "📋", desc: "Claims with provider, enrollee, and item details", templates: {
+    full_claims_extract: { name: "Full Claims Extract", desc: "Detailed claims with items, enrollees, and provider info", heavy: true,
+      filters: ["hmo_id","date_range","date_field","hmo_status","provider_status","provider_name","vetted_only","has_unmatched_tariff"],
+      build: (f, lim) => {
+        let w=[];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`claims\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        if(isNum(f.hmo_status)) w.push(`  \`claims\`.\`hmo_status\` = ${Number(f.hmo_status)}`);
+        if(isNum(f.provider_status)) w.push(`  \`claims\`.\`provider_status\` = ${Number(f.provider_status)}`);
+        if(f.provider_name) w.push(`  \`providers\`.\`name\` LIKE '%${esc(f.provider_name)}%'`);
+        if(f.vetted_only) w.push("  `claims`.`vetted_at` IS NOT NULL");
+        if(f.has_unmatched_tariff) w.push("  `claims`.`has_unmatched_tariff` = 1");
+        const df=f.date_field||"created_at";
+        if(f.date_from) w.push(`  \`claims\`.\`${esc(df)}\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`claims\`.\`${esc(df)}\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        return `SELECT\n  \`claims\`.\`id\`,\n  \`claims\`.\`hmo_id\`,\n  \`providers\`.\`name\` AS \`Provider_Name\`,\n  CONCAT(\`enrollees\`.\`firstname\`, ' ', \`enrollees\`.\`lastname\`) AS \`Enrollee_Name\`,\n  TIMESTAMPDIFF(YEAR, \`enrollees\`.\`birthdate\`, CURDATE()) AS \`Enrollee_Age\`,\n  \`claims\`.\`encounter_date\`,\n  \`enrollees\`.\`insurance_no\`,\n  \`claims\`.\`total_amount\` AS \`Amount_Submitted\`,\n  \`claims\`.\`approved_amount\` AS \`Amount_Approved\`,\n  \`claims\`.\`submitted_at\`,\n  \`claims\`.\`provider_status\`,\n  \`claims\`.\`hmo_status\`,\n  \`claims\`.\`hmo_pile_id\`,\n  \`claims\`.\`approval_code\`,\n  \`claims\`.\`vetted_at\`,\n  \`claims\`.\`hmo_erp_id\`,\n  \`claims\`.\`entry_point\`,\n  \`claim_items\`.\`description\` AS \`Item_Name\`,\n  \`claim_items\`.\`id\` AS \`Item_ID\`,\n  \`claim_items\`.\`qty\` AS \`Item_Qty\`,\n  \`claim_items\`.\`amount\` AS \`Item_Billed\`,\n  \`claim_items\`.\`approved_amount\` AS \`Item_Approved\`,\n  \`claim_items\`.\`approved_qty\`,\n  \`claim_item_comments\`.\`name\` AS \`Item_Comment\`\nFROM \`claims\`\nLEFT JOIN \`providers\` ON \`claims\`.\`provider_id\` = \`providers\`.\`id\`\nLEFT JOIN \`enrollees\` ON \`claims\`.\`enrollee_id\` = \`enrollees\`.\`id\`\nLEFT JOIN \`claim_items\` ON \`claims\`.\`id\` = \`claim_items\`.\`claim_id\`\nLEFT JOIN \`claim_item_comments\` ON \`claim_items\`.\`comment_id\` = \`claim_item_comments\`.\`id\`${w.length?"\nWHERE\n"+w.join("\n  AND "):""}\nORDER BY \`claims\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
       }
-      lines.push(``);
-    });
+    },
+    claims_summary: { name: "Claims Summary (Grouped)", desc: "Aggregated claim counts and amounts per claim", heavy: true,
+      filters: ["hmo_id","date_range","date_field","provider_status","provider_name"],
+      build: (f, lim) => {
+        let w=[];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`claims\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        if(isNum(f.provider_status)) w.push(`  \`claims\`.\`provider_status\` = ${Number(f.provider_status)}`);
+        if(f.provider_name) w.push(`  \`providers\`.\`name\` = '${esc(f.provider_name)}'`);
+        const df=f.date_field||"encounter_date";
+        if(f.date_from) w.push(`  \`claims\`.\`${esc(df)}\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`claims\`.\`${esc(df)}\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        return `SELECT\n  \`claims\`.\`id\` AS \`Claim_ID\`,\n  \`claims\`.\`hmo_id\`,\n  \`providers\`.\`name\` AS \`Provider_Name\`,\n  CONCAT(\`enrollees\`.\`firstname\`, ' ', \`enrollees\`.\`lastname\`) AS \`Enrollee_Name\`,\n  \`claims\`.\`encounter_date\`,\n  \`claims\`.\`total_amount\`,\n  \`claims\`.\`approved_amount\`,\n  COUNT(DISTINCT \`claim_items\`.\`id\`) AS \`Item_Count\`,\n  SUM(\`claim_items\`.\`amount\`) AS \`Total_Item_Billed\`,\n  SUM(\`claim_items\`.\`approved_amount\`) AS \`Total_Item_Approved\`\nFROM \`claims\`\nLEFT JOIN \`providers\` ON \`claims\`.\`provider_id\` = \`providers\`.\`id\`\nLEFT JOIN \`enrollees\` ON \`claims\`.\`enrollee_id\` = \`enrollees\`.\`id\`\nLEFT JOIN \`claim_items\` ON \`claims\`.\`id\` = \`claim_items\`.\`claim_id\`${w.length?"\nWHERE\n"+w.join("\n  AND "):""}\nGROUP BY \`claims\`.\`id\`\nORDER BY \`claims\`.\`encounter_date\` DESC${lim?`\nLIMIT ${lim}`:""};`;
+      }
+    },
+    claim_count: { name: "Claim Count", desc: "Count of claims with filters", heavy: false,
+      filters: ["hmo_id","date_range","date_field","provider_status","hmo_status"],
+      build: (f) => {
+        let w=[];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`claims\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        if(isNum(f.hmo_status)) w.push(`  \`claims\`.\`hmo_status\` = ${Number(f.hmo_status)}`);
+        if(isNum(f.provider_status)) w.push(`  \`claims\`.\`provider_status\` = ${Number(f.provider_status)}`);
+        const df=f.date_field||"submitted_at";
+        if(f.date_from) w.push(`  \`claims\`.\`${esc(df)}\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`claims\`.\`${esc(df)}\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        return `-- Aggregate: no LIMIT needed\nSELECT\n  COUNT(DISTINCT \`claims\`.\`id\`) AS \`claim_count\`\nFROM \`claims\`${w.length?"\nWHERE\n"+w.join("\n  AND "):""};`;
+      }
+    },
+    claims_status_breakdown: { name: "Status Breakdown", desc: "Claims grouped by hmo_status with amounts", heavy: false,
+      filters: ["hmo_id","date_range","date_field"],
+      build: (f) => {
+        let w=[];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`claims\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        const df=f.date_field||"created_at";
+        if(f.date_from) w.push(`  \`claims\`.\`${esc(df)}\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`claims\`.\`${esc(df)}\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        return `-- hmo_status: -1=Rejected, 0=Pending, 1=Approved\nSELECT\n  \`hmo_status\`,\n  COUNT(*) AS \`total\`,\n  SUM(\`approved_amount\`) AS \`total_approved_amount\`,\n  COUNT(\`vetted_at\`) AS \`vetted_count\`\nFROM \`claims\`${w.length?"\nWHERE\n"+w.join("\n  AND "):""}\nGROUP BY \`hmo_status\`\nORDER BY \`hmo_status\`;`;
+      }
+    },
+    todays_claims: { name: "Today's Claims", desc: "Claims created today for a specific HMO", heavy: true,
+      filters: ["hmo_id"],
+      build: (f, lim) => {
+        let w=[`  \`c\`.\`created_at\` >= CURDATE()`,`  \`c\`.\`created_at\` < DATE_ADD(CURDATE(), INTERVAL 1 DAY)`];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`c\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        return `SELECT\n  \`c\`.\`id\`,\n  \`c\`.\`hmo_id\`,\n  \`p\`.\`name\` AS \`provider_name\`,\n  CONCAT(\`e\`.\`firstname\`, ' ', \`e\`.\`lastname\`) AS \`enrollee_name\`,\n  \`c\`.\`encounter_date\`,\n  \`c\`.\`total_amount\` AS \`amount_submitted\`,\n  \`c\`.\`approved_amount\` AS \`amount_approved\`,\n  \`c\`.\`submitted_at\`,\n  \`c\`.\`provider_status\`,\n  \`c\`.\`hmo_status\`\nFROM \`claims\` \`c\`\nJOIN \`providers\` \`p\` ON \`c\`.\`provider_id\` = \`p\`.\`id\`\nJOIN \`enrollees\` \`e\` ON \`c\`.\`enrollee_id\` = \`e\`.\`id\`\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`c\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
+      }
+    },
+  }},
+  claims_erp: { name: "Claims ERP/ID", icon: "🔗", desc: "ERP ID validation, range checks, and lookups", templates: {
+    erp_range: { name: "ERP ID Range", desc: "Find first and last ERP IDs in a date range", heavy: false,
+      filters: ["hmo_id","date_range","erp_prefix"],
+      build: (f) => {
+        const px=esc(f.erp_prefix||"UG"); let w=[];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`hmo_id\` = ${Number(f.hmo_id)}`);
+        if(f.date_from) w.push(`  \`encounter_date\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`encounter_date\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        w.push(`  \`hmo_erp_id\` LIKE '${px}%'`);
+        return `-- Aggregate: no LIMIT needed\nSELECT\n  CONCAT('${px}', MIN(CAST(SUBSTRING(\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED))) AS \`first_erp_id\`,\n  CONCAT('${px}', MAX(CAST(SUBSTRING(\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED))) AS \`last_erp_id\`\nFROM \`claims\`\nWHERE\n${w.join("\n  AND ")};`;
+      }
+    },
+    erp_detail_list: { name: "ERP Detail List", desc: "Claims with ERP IDs sorted chronologically", heavy: true,
+      filters: ["hmo_id","date_range","erp_prefix"],
+      build: (f, lim) => {
+        const px=esc(f.erp_prefix||"UG"); let w=[];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`c\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        if(f.date_from) w.push(`  \`c\`.\`encounter_date\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`c\`.\`encounter_date\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        w.push(`  \`c\`.\`hmo_erp_id\` LIKE '${px}%'`);
+        return `SELECT\n  \`c\`.\`hmo_erp_id\`,\n  \`c\`.\`encounter_date\`,\n  CONCAT(\`e\`.\`firstname\`, ' ', \`e\`.\`lastname\`) AS \`enrollee_name\`,\n  \`e\`.\`insurance_no\` AS \`enrollee_id\`,\n  \`p\`.\`name\` AS \`provider_name\`,\n  \`c\`.\`total_amount\` AS \`amount\`\nFROM \`claims\` \`c\`\nJOIN \`enrollees\` \`e\` ON \`e\`.\`id\` = \`c\`.\`enrollee_id\`\nJOIN \`providers\` \`p\` ON \`p\`.\`id\` = \`c\`.\`provider_id\`\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`c\`.\`encounter_date\` ASC, CAST(SUBSTRING(\`c\`.\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED) ASC${lim?`\nLIMIT ${lim}`:""};`;
+      }
+    },
+  }},
+  tariff_counts: { name: "Tariff Analysis", icon: "💰", desc: "Tariff counts, grouping, and mapping analysis", templates: {
+    unflagged_by_hmo: { name: "Unflagged Mapped by HMO", desc: "Count unflagged, mapped tariffs per HMO", heavy: false,
+      filters: ["care_type_medication"],
+      build: (f) => {
+        let extra="";
+        if(f.care_type_medication) extra=`\n  AND \`c\`.\`type_id\` = 1\n  AND \`pt\`.\`care_variation_id\` IS NULL`;
+        return `-- Aggregate: no LIMIT needed\nSELECT\n  \`h\`.\`name\` AS \`hmo_name\`,\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_unflagged_mapped\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`${f.care_type_medication?"\nJOIN `cares` `c` ON `pt`.`care_id` = `c`.`id`":""}\nWHERE \`pt\`.\`care_id\` IS NOT NULL\n  AND \`pt\`.\`flagged_as_correct_at\` IS NULL${extra}\nGROUP BY \`h\`.\`id\`, \`h\`.\`name\`\nORDER BY \`total_unflagged_mapped\` DESC;`;
+      }
+    },
+    unmapped_by_hmo: { name: "Unmapped by HMO", desc: "Count unmapped, unflagged tariffs per HMO", heavy: false, filters: [],
+      build: () => `-- Aggregate: no LIMIT needed\nSELECT\n  \`h\`.\`name\` AS \`hmo_name\`,\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_unmapped_unflagged\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nWHERE \`pt\`.\`care_id\` IS NULL\n  AND \`pt\`.\`flagged_as_correct_at\` IS NULL\nGROUP BY \`h\`.\`id\`, \`h\`.\`name\`\nORDER BY \`total_unmapped_unflagged\` DESC;`
+    },
+    new_tariffs_today: { name: "New Tariffs Today", desc: "Count of new tariffs created today", heavy: false, filters: ["hmo_id"],
+      build: (f) => {
+        let w=[`  \`pt\`.\`created_at\` >= CURDATE()`,`  \`pt\`.\`created_at\` < DATE_ADD(CURDATE(), INTERVAL 1 DAY)`];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`pt\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        return `-- Aggregate: no LIMIT needed\nSELECT\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_new_provider_tariffs_today\`\nFROM \`provider_tariffs\` \`pt\`\nWHERE\n${w.join("\n  AND ")};`;
+      }
+    },
+  }},
+  tariff_exports: { name: "Tariff Exports", icon: "📦", desc: "Detailed tariff data with care/variation info", templates: {
+    tariff_full_export: { name: "Full Tariff Export", desc: "Tariffs with HMO, provider, care details", heavy: true,
+      filters: ["hmo_id","date_range","date_field","flagged_status","care_type_medication","variation_filter"],
+      build: (f, lim) => {
+        let w=[];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`pt\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        if(f.flagged_status==="unflagged") w.push("  `pt`.`flagged_as_correct_at` IS NULL");
+        if(f.flagged_status==="flagged") w.push("  `pt`.`flagged_as_correct_at` IS NOT NULL");
+        if(f.care_type_medication) w.push("  `c`.`type_id` = 1");
+        if(f.variation_filter==="with") w.push("  `pt`.`care_variation_id` IS NOT NULL");
+        if(f.variation_filter==="without") w.push("  `pt`.`care_variation_id` IS NULL");
+        w.push("  `pt`.`care_id` IS NOT NULL");
+        const df=f.date_field||"created_at";
+        if(f.date_from) w.push(`  \`pt\`.\`${esc(df)}\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`pt\`.\`${esc(df)}\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        return `SELECT\n  \`pt\`.\`id\` AS \`care_description_id\`,\n  \`pt\`.\`care_id\`,\n  \`h\`.\`name\` AS \`hmo_name\`,\n  \`p\`.\`name\` AS \`provider_name\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  \`pt\`.\`desc\` AS \`care_description\`,\n  \`pt\`.\`amount\`,\n  \`pt\`.\`created_at\`,\n  \`pt\`.\`updated_at\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`cares\` \`c\` ON \`pt\`.\`care_id\` = \`c\`.\`id\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nLEFT JOIN \`providers\` \`p\` ON \`pt\`.\`provider_id\` = \`p\`.\`id\`\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`pt\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
+      }
+    },
+    tariff_with_variations: { name: "Tariffs + Variations", desc: "Medication tariffs with strength and drug form from JSON", heavy: true,
+      filters: ["hmo_id","date_range","flagged_status"],
+      build: (f, lim) => {
+        let w=["  `c`.`type_id` = 1"];
+        if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`pt\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
+        if(f.flagged_status==="unflagged") w.push("  `pt`.`flagged_as_correct_at` IS NULL");
+        if(f.date_from) w.push(`  \`pt\`.\`created_at\` >= '${esc(f.date_from)}'`);
+        if(f.date_to) w.push(`  \`pt\`.\`created_at\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
+        return `SELECT\n  \`pt\`.\`id\` AS \`provider_tariff_id\`,\n  \`pt\`.\`care_id\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  \`h\`.\`name\` AS \`hmo_name\`,\n  JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.strength')) AS \`strength\`,\n  \`df\`.\`name\` AS \`drug_form\`,\n  \`pt\`.\`amount\`,\n  \`pt\`.\`desc\` AS \`tariff_description\`,\n  \`pt\`.\`care_variation_id\`,\n  \`pt\`.\`created_at\`,\n  \`pt\`.\`updated_at\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`cares\` \`c\` ON \`pt\`.\`care_id\` = \`c\`.\`id\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nLEFT JOIN \`care_variations\` \`cv\` ON \`pt\`.\`care_variation_id\` = \`cv\`.\`id\`\nLEFT JOIN \`drug_forms\` \`df\` ON \`df\`.\`id\` = CAST(JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.drug_form_id')) AS UNSIGNED)\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`pt\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
+      }
+    },
+  }},
+  cares_analysis: { name: "Cares / CVE", icon: "🧬", desc: "Care catalog analysis, V1/V2 migration", templates: {
+    v1_cares: { name: "Non-V2 Cares (V1/NULL)", desc: "All cares not yet on CVE version 2", heavy: false, filters: [],
+      build: (f, lim) => `SELECT\n  \`c\`.\`id\`,\n  \`c\`.\`name\`,\n  \`c\`.\`type\`,\n  \`c\`.\`active\`,\n  \`c\`.\`type_id\`,\n  \`c\`.\`cve_version\`\nFROM \`cares\` \`c\`\nWHERE \`c\`.\`cve_version\` IS NULL\n   OR \`c\`.\`cve_version\` <> 2\nORDER BY \`c\`.\`name\`${lim?`\nLIMIT ${lim}`:""};`
+    },
+    v2_cares: { name: "V2 Cares (Active)", desc: "All active cares on CVE version 2", heavy: false, filters: [],
+      build: (f, lim) => `SELECT\n  \`c\`.\`id\`,\n  \`c\`.\`name\`,\n  \`c\`.\`type\`,\n  \`c\`.\`active\`,\n  \`c\`.\`type_id\`,\n  \`c\`.\`cve_version\`\nFROM \`cares\` \`c\`\nWHERE \`c\`.\`cve_version\` = 2\n  AND \`c\`.\`active\` = 1\nORDER BY \`c\`.\`name\`${lim?`\nLIMIT ${lim}`:""};`
+    },
+    cve_version_summary: { name: "CVE Version Summary", desc: "Count of cares grouped by CVE version", heavy: false, filters: [],
+      build: () => `-- Aggregate: no LIMIT needed\nSELECT\n  \`c\`.\`cve_version\`,\n  COUNT(*) AS \`total_cares\`\nFROM \`cares\` \`c\`\nGROUP BY \`c\`.\`cve_version\`\nORDER BY \`c\`.\`cve_version\`;`
+    },
+    v1_with_variations: { name: "V1 Cares + Variations", desc: "Non-V2 cares with strength/drug form details", heavy: true, filters: [],
+      build: (f, lim) => `SELECT\n  \`c\`.\`id\` AS \`care_id\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  COALESCE(NULLIF(\`c\`.\`base_name\`, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(\`c\`.\`meta\`, '$.Text')), '')) AS \`care_description\`,\n  \`c\`.\`type_id\`,\n  CASE WHEN COUNT(\`cv\`.\`id\`) > 0 THEN 'YES' ELSE 'NO' END AS \`has_variation\`,\n  GROUP_CONCAT(\n    DISTINCT CONCAT(\n      COALESCE(JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.strength')), ''),\n      CASE WHEN \`df\`.\`name\` IS NOT NULL AND \`df\`.\`name\` <> '' THEN CONCAT(' ', \`df\`.\`name\`) ELSE '' END\n    )\n    ORDER BY \`cv\`.\`id\`\n    SEPARATOR ' | '\n  ) AS \`variation_stats\`\nFROM \`cares\` \`c\`\nLEFT JOIN \`care_variations\` \`cv\` ON \`cv\`.\`care_id\` = \`c\`.\`id\`\nLEFT JOIN \`drug_forms\` \`df\` ON \`df\`.\`id\` = CAST(JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.drug_form_id')) AS UNSIGNED)\nWHERE \`c\`.\`cve_version\` IS NULL\n   OR \`c\`.\`cve_version\` <> 2\nGROUP BY \`c\`.\`id\`, \`c\`.\`name\`, \`c\`.\`base_name\`, \`c\`.\`type_id\`, \`c\`.\`meta\`\nORDER BY \`c\`.\`id\`${lim?`\nLIMIT ${lim}`:""};`
+    },
+  }},
+  reference: { name: "Reference", icon: "🔍", desc: "Status lookups, distinct values, system checks", templates: {
+    distinct_hmo_status: { name: "Distinct HMO Statuses", desc: "All unique hmo_status values in claims", heavy: false, filters: [],
+      build: () => `SELECT DISTINCT \`hmo_status\`\nFROM \`claims\`\nORDER BY \`hmo_status\`;`
+    },
+    distinct_provider_status: { name: "Provider Status Breakdown", desc: "Provider status values with counts", heavy: false, filters: [],
+      build: () => `-- Aggregate: no LIMIT needed\nSELECT\n  \`provider_status\`,\n  COUNT(*) AS \`total\`\nFROM \`claims\`\nGROUP BY \`provider_status\`\nORDER BY \`provider_status\`;`
+    },
+    distinct_enrollee_status: { name: "Distinct Enrollee Statuses", desc: "All unique status values in enrollees", heavy: false, filters: [],
+      build: () => `SELECT DISTINCT \`status\`\nFROM \`enrollees\`\nORDER BY \`status\`;`
+    },
+  }},
+};
 
-    // Top insurers for last period
-    const last = periods[periods.length - 1];
-    if (last) {
-      const sorted = Object.entries(last.byInsurer).sort((a,b) => b[1]-a[1]).slice(0, 10);
-      lines.push(`*Top Insurers (${last.label}):*`);
-      sorted.forEach(([name, count], i) => {
-        let delta = "";
-        if (hasDelta && periods.length > 1) {
-          const prev = periods[periods.length - 2];
-          const prevCount = prev.byInsurer[name] || 0;
-          const change = pctChange(count, prevCount);
-          delta = ` (${change > 0 ? "+" : ""}${change.toFixed(1)}%)`;
-        }
-        lines.push(`${i+1}. ${name}: *${fmt(count)}*${delta}`);
-      });
-    }
+/* ─── Shared inline styles ─────────────────────────────────── */
+const inputS = { padding:"9px 12px", border:`1.5px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"DM Sans,sans-serif", color:C.text, background:C.elevated, outline:"none", width:"100%" };
+const selectS = { ...inputS, cursor:"pointer" };
 
-    lines.push(``, `_Sent from Claims Intelligence Dashboard_`);
-    const message = lines.join("\n");
+/* ─── Components ───────────────────────────────────────────── */
+function Badge({ children, color = C.accent, bg }) {
+  return <span style={{ display:"inline-flex", alignItems:"center", gap:4, padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:600, background:bg||color+"22", color }}>{children}</span>;
+}
 
-    try {
-      const res = await fetch("/api/slack", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channels: [...reportChans], message }),
-      });
-      const json = await res.json();
-      setReportResults(json.results || []);
-      setReportSent(true);
-      setTimeout(() => { setShowReport(false); setReportSent(false); }, 3000);
-    } catch (e) { console.error(e); }
-    setReportSending(false);
-  };
-
-  const downloadCSV = () => {
-    const { dates, insurers, map } = pivot;
-    let csv = "Insurer," + dates.join(",") + ",Total\n";
-    csv += "TOTAL," + dates.map(d => { let s=0; insurers.forEach(i => s += map[`${d}_${i}`]||0); return s; }).join(",") + "," + total + "\n";
-    insurers.forEach(ins => {
-      let rt=0; const vals = dates.map(d => { const v = map[`${d}_${ins}`]||0; rt+=v; return v; });
-      csv += `"${ins}",${vals.join(",")},${rt}\n`;
-    });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    a.download = `claims_${startDate}_to_${endDate}.csv`;
-    a.click();
-  };
-
-  const openSlackModal = () => {
-    setSlackInsurers(new Set(selected)); setSlackSent(false); setSlackResults([]); setShowSlack(true);
-  };
-
-  const sendSlack = async () => {
-    setSending(true);
-    const slackData = filtered.filter(r => slackInsurers.has(r.insurer));
-    const slackTotal = slackData.reduce((s, r) => s + r.claims_count, 0);
-    const slackDays = [...new Set(slackData.map(r => r.date))].length;
-    const slackAvg = slackDays ? Math.round(slackTotal / slackDays) : 0;
-    const insBreakdown = {};
-    slackData.forEach(r => { insBreakdown[r.insurer] = (insBreakdown[r.insurer]||0) + r.claims_count; });
-    const sorted = Object.entries(insBreakdown).sort((a,b) => b[1]-a[1]);
-
-    const message = [
-      `📊 *Claims Intelligence Report*`,
-      `📅 Period: ${startDate} → ${endDate}`,
-      ``,
-      `🏥 Total Claims: *${fmt(slackTotal)}*`,
-      `📈 Daily Average: *${fmt(slackAvg)}*`,
-      `🔥 Peak Day: *${peak ? `${fmt(peak.total)} (${peak.date})` : "—"}*`,
-      `🏢 Insurers: *${slackInsurers.size}* selected`,
-      ``, `*Breakdown:*`,
-      ...sorted.map(([name, count], i) => `${i+1}. ${name}: *${fmt(count)}* (${(count/slackTotal*100).toFixed(1)}%)`),
-      ``, `_Sent from Claims Intelligence Dashboard_`
-    ].join("\n");
-
-    try {
-      const res = await fetch("/api/slack", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channels: [...slackChans], message }),
-      });
-      const json = await res.json();
-      setSlackResults(json.results || []);
-      setSlackSent(true);
-      setTimeout(() => { setShowSlack(false); setSlackSent(false); }, 3000);
-    } catch (e) { console.error(e); }
-    setSending(false);
-  };
-
-  /* ── styles ─────────────────────────────────────────── */
-  const inp = { background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.text, fontSize: 13, outline: "none", fontFamily: "'JetBrains Mono',monospace" };
-  const btn = (on) => ({ background: on ? C.accent : "transparent", color: on ? C.bg : C.sub, border: `1px solid ${on ? C.accent : C.border}`, borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all .2s" });
-  const abtn = (color = C.accent) => ({ background: "transparent", border: `1px solid ${color}`, color, borderRadius: 8, padding: "10px 20px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, transition: "all .2s" });
-
-  /* ── loading / error ────────────────────────────────── */
-  if (loading) return (
-    <div style={{ background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans',sans-serif" }}>
-      <div style={{ textAlign: "center" }}>
-        <div style={{ width: 48, height: 48, borderRadius: 12, background: `linear-gradient(135deg,${C.accent},#00B4D8)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, color: C.bg, margin: "0 auto 16px", animation: "pulse 1.5s infinite" }}>C</div>
-        <div style={{ color: C.sub, fontSize: 14 }}>Loading claims data...</div>
-      </div>
-    </div>
-  );
-
-  if (error) return (
-    <div style={{ background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans',sans-serif" }}>
-      <div style={{ background: C.card, border: `1px solid ${C.danger}44`, borderRadius: 12, padding: 32, maxWidth: 400, textAlign: "center" }}>
-        <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
-        <div style={{ color: C.danger, fontWeight: 600, marginBottom: 8 }}>Connection Error</div>
-        <div style={{ color: C.sub, fontSize: 13, marginBottom: 16 }}>{error}</div>
-        <button onClick={fetchData} style={{ ...abtn(C.accent), justifyContent: "center" }}>🔄 Retry</button>
-      </div>
-    </div>
-  );
-
-  const VIEWS = ["overview","table","trends","compare"];
-
-  /* ════════════════ RENDER ════════════════════════════════ */
+function FilterPanel({ filters: fl, values: v, onChange }) {
+  const [customHmo, setCustomHmo] = useState("");
+  if (!fl || !fl.length) return <div style={{ padding:18, color:C.muted, fontSize:13, fontStyle:"italic", textAlign:"center" }}>No filters needed — runs as-is ✅</div>;
+  const L = (label) => <label style={{ fontSize:11, fontWeight:600, color:C.sub, textTransform:"uppercase", letterSpacing:".05em" }}>{label}</label>;
   return (
-    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "'DM Sans',sans-serif" }}>
-      <style>{`
-        @keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
-        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-        input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(.7);cursor:pointer}
-        ::-webkit-scrollbar{width:6px;height:6px}
-        ::-webkit-scrollbar-track{background:${C.bg}}
-        ::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}
-        select{-webkit-appearance:none;appearance:none}
-      `}</style>
+    <div style={{ padding:18, display:"flex", flexDirection:"column", gap:14 }}>
+      {fl.includes("hmo_id") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("HMO Partner")}
+        <select value={v.hmo_id||""} onChange={e=>{onChange("hmo_id",e.target.value);if(e.target.value!=="0")setCustomHmo("");}} style={selectS}>
+          <option value="">All HMOs</option>
+          {HMO_LIST.map(h=><option key={h.id} value={h.id}>{h.name}{h.id?` (${h.id})`:""}</option>)}
+        </select>
+        {v.hmo_id==="0" && <input type="number" min="1" placeholder="Enter HMO ID..." value={customHmo} onChange={e=>{setCustomHmo(e.target.value);if(e.target.value)onChange("hmo_id",e.target.value);}} style={{...inputS,marginTop:4}} />}
+      </div>}
+      {fl.includes("date_field") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("Date Field")}
+        <select value={v.date_field||"created_at"} onChange={e=>onChange("date_field",e.target.value)} style={selectS}>
+          <option value="created_at">Created At</option><option value="encounter_date">Encounter Date</option>
+          <option value="submitted_at">Submitted At</option><option value="vetted_at">Vetted At</option><option value="paid_at">Paid At</option>
+        </select>
+      </div>}
+      {fl.includes("date_range") && <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>{L("From")}<input type="date" value={v.date_from||""} onChange={e=>onChange("date_from",e.target.value)} style={inputS}/></div>
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>{L("To")}<input type="date" value={v.date_to||""} onChange={e=>onChange("date_to",e.target.value)} style={inputS}/></div>
+      </div>}
+      {fl.includes("hmo_status") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("HMO Status")}
+        <select value={v.hmo_status??""} onChange={e=>onChange("hmo_status",e.target.value)} style={selectS}>
+          <option value="">All</option>{Object.entries(STATUS_MAPS.hmo_status.values).map(([k,l])=><option key={k} value={k}>{l} ({k})</option>)}
+        </select>
+      </div>}
+      {fl.includes("provider_status") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("Provider Status")}
+        <select value={v.provider_status??""} onChange={e=>onChange("provider_status",e.target.value)} style={selectS}>
+          <option value="">All</option>{Object.entries(STATUS_MAPS.provider_status.values).map(([k,l])=><option key={k} value={k}>{l} ({k})</option>)}
+        </select>
+      </div>}
+      {fl.includes("provider_name") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("Provider Name (partial)")}<input type="text" placeholder="e.g., General Hospital..." value={v.provider_name||""} onChange={e=>onChange("provider_name",e.target.value)} style={inputS}/>
+      </div>}
+      {fl.includes("erp_prefix") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("ERP Prefix")}<input type="text" maxLength={4} placeholder="UG" value={v.erp_prefix||""} onChange={e=>onChange("erp_prefix",e.target.value.replace(/[^A-Za-z]/g,"").toUpperCase())} style={inputS}/>
+      </div>}
+      {fl.includes("flagged_status") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("Flagged Status")}
+        <select value={v.flagged_status||""} onChange={e=>onChange("flagged_status",e.target.value)} style={selectS}>
+          <option value="">All</option><option value="unflagged">Unflagged</option><option value="flagged">Flagged as Correct</option>
+        </select>
+      </div>}
+      {fl.includes("variation_filter") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {L("Variation")}
+        <select value={v.variation_filter||""} onChange={e=>onChange("variation_filter",e.target.value)} style={selectS}>
+          <option value="">All</option><option value="with">With Variation</option><option value="without">Without Variation</option>
+        </select>
+      </div>}
+      {fl.includes("vetted_only") && <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:C.text}}>
+        <input type="checkbox" checked={v.vetted_only||false} onChange={e=>onChange("vetted_only",e.target.checked)} style={{accentColor:C.accent,width:16,height:16}}/>Only vetted claims
+      </label>}
+      {fl.includes("has_unmatched_tariff") && <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:C.text}}>
+        <input type="checkbox" checked={v.has_unmatched_tariff||false} onChange={e=>onChange("has_unmatched_tariff",e.target.checked)} style={{accentColor:C.accent,width:16,height:16}}/>Has unmatched tariff
+      </label>}
+      {fl.includes("care_type_medication") && <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:C.text}}>
+        <input type="checkbox" checked={v.care_type_medication||false} onChange={e=>onChange("care_type_medication",e.target.checked)} style={{accentColor:C.accent,width:16,height:16}}/>Medications only (type_id = 1)
+      </label>}
+    </div>
+  );
+}
 
-      {/* ── HEADER ──────────────────────────────────────── */}
-      <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg,${C.accent},#00B4D8)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, color: C.bg }}>C</div>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: -.3 }}>Claims Intelligence</div>
-            <div style={{ fontSize: 10, color: C.muted }}>Curacel Health Ops • {rawData.length} records{lastUpdate && ` • Updated ${new Date(lastUpdate).toLocaleTimeString()}`}</div>
+function AIAssistant({ onResult }) {
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const examples = [
+    "Show me all approved claims for UAP Old Mutual in January 2026 with provider and enrollee details",
+    "Count unflagged medication tariffs without variations grouped by HMO",
+    "List today's new provider tariffs for hmo_id 73 with care names",
+    "Find all claims with unmatched tariffs submitted in the last 30 days",
+    "Show enrollee details and claim amounts for rejected claims in August 2025",
+  ];
+  const go = async () => {
+    if (!prompt.trim()) return;
+    setLoading(true); setError("");
+    try {
+      const res = await fetch("/api/generate-sql", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({prompt:prompt.trim()}) });
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const data = await res.json();
+      if (data.sql) onResult(data.sql); else setError("No SQL generated. Try being more specific.");
+    } catch(e) { setError("Failed to generate. Check the console or try again."); console.error(e); }
+    setLoading(false);
+  };
+  return (
+    <div style={{ padding:18, display:"flex", flexDirection:"column", gap:16 }}>
+      <div style={{ background:`linear-gradient(135deg, ${C.purple}15, ${C.accent}10)`, borderRadius:10, padding:18, border:`1.5px solid ${C.purple}40` }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+          <span style={{fontSize:22}}>🤖</span>
+          <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>AI Query Generator</div><div style={{fontSize:12,color:C.sub}}>Describe what you need — I'll write the SQL</div></div>
+          <Badge color={C.purple}>Powered by Claude</Badge>
+        </div>
+        <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&(e.metaKey||e.ctrlKey))go();}}
+          placeholder="e.g., Show me all approved claims for UAP in July 2025 with enrollee names and amounts..."
+          style={{ ...inputS, minHeight:100, resize:"vertical", lineHeight:1.6, border:`1.5px solid ${C.purple}50` }} />
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:12 }}>
+          <button onClick={go} disabled={loading||!prompt.trim()} style={{
+            padding:"10px 22px", background:loading?C.muted:C.accent, color:C.bg, border:"none", borderRadius:6,
+            fontSize:13, fontWeight:700, cursor:loading?"wait":"pointer", fontFamily:"DM Sans,sans-serif",
+            opacity:!prompt.trim()&&!loading?.5:1, transition:"all .2s",
+          }}>{loading?"⏳ Generating...":"✨ Generate SQL"}</button>
+          <span style={{fontSize:11,color:C.muted}}>⌘+Enter</span>
+        </div>
+        {error && <div style={{marginTop:10,padding:"8px 12px",background:C.danger+"22",border:`1px solid ${C.danger}55`,borderRadius:6,fontSize:12,color:C.danger}}>{error}</div>}
+      </div>
+      <div>
+        <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em",marginBottom:8}}>💡 Examples</div>
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {examples.map((ex,i)=><button key={i} onClick={()=>setPrompt(ex)} style={{
+            textAlign:"left",padding:"8px 12px",background:C.elevated,border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,color:C.sub,cursor:"pointer",lineHeight:1.4,transition:"all .15s",
+          }} onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.color=C.sub;}}>"{ex}"</button>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SQLDisplay({ sql, name, limitOn, onToggle }) {
+  const [copied, setCopied] = useState(false);
+  const lines = sql.split("\n").length;
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(sql); } catch { const t=document.createElement("textarea");t.value=sql;document.body.appendChild(t);t.select();document.execCommand("copy");document.body.removeChild(t); }
+    setCopied(true); setTimeout(()=>setCopied(false),2000);
+  };
+  return (
+    <div style={{ background:C.code.bg, borderRadius:12, border:`1.5px solid ${C.border}`, overflow:"hidden" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", background:"#0A0E18", borderBottom:`1px solid ${C.border}`, flexWrap:"wrap", gap:8 }}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{display:"flex",gap:6}}><div style={{width:12,height:12,borderRadius:"50%",background:C.danger}}/><div style={{width:12,height:12,borderRadius:"50%",background:C.warn}}/><div style={{width:12,height:12,borderRadius:"50%",background:C.success}}/></div>
+          <span style={{fontSize:12,color:C.muted,fontFamily:"JetBrains Mono,monospace"}}>{name||"query"}.sql</span>
+          <span style={{fontSize:11,color:C.border,fontFamily:"JetBrains Mono,monospace"}}>({lines} lines)</span>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          {onToggle && <button onClick={onToggle} style={{
+            padding:"5px 12px", background:limitOn?C.success+"22":C.danger+"22", color:limitOn?C.success:C.danger,
+            border:`1px solid ${limitOn?C.success:C.danger}`, borderRadius:6, fontSize:11, fontWeight:600, fontFamily:"JetBrains Mono,monospace", cursor:"pointer",
+          }}>{limitOn?`LIMIT ${LIMIT} ✓`:"No LIMIT"}</button>}
+          <button onClick={copy} style={{
+            padding:"7px 18px", background:copied?C.success:C.accent, color:C.bg, border:"none", borderRadius:6,
+            fontSize:12, fontWeight:700, fontFamily:"DM Sans,sans-serif", cursor:"pointer", transition:"all .2s",
+          }}>{copied?"✓ Copied!":"📋 Copy"}</button>
+        </div>
+      </div>
+      <pre style={{ padding:"18px 20px", margin:0, fontFamily:"JetBrains Mono,monospace", fontSize:13, lineHeight:1.7, color:C.code.text, overflowX:"auto", overflowY:"auto", maxHeight:520, whiteSpace:"pre", tabSize:2 }} dangerouslySetInnerHTML={{__html:highlightSQL(sql)}} />
+    </div>
+  );
+}
+
+/* ─── Main Page ────────────────────────────────────────────── */
+export default function QueryBuilderPage() {
+  const [activeCat, setActiveCat] = useState("ai_assistant");
+  const [activeTpl, setActiveTpl] = useState(null);
+  const [filters, setFilters] = useState({});
+  const [aiSQL, setAiSQL] = useState("");
+  const [limitOn, setLimitOn] = useState(true);
+
+  const cat = CATS[activeCat];
+  const tpl = activeTpl ? cat?.templates?.[activeTpl] : null;
+  const isAI = activeCat === "ai_assistant";
+
+  useEffect(() => { setActiveTpl(null); setFilters({}); setAiSQL("");
+    if (activeCat !== "ai_assistant") { const t=CATS[activeCat]?.templates; if(t){const f=Object.keys(t)[0]; if(f)setActiveTpl(f);} }
+  }, [activeCat]);
+  useEffect(() => { setFilters({}); setLimitOn(true); }, [activeTpl]);
+
+  const isH = activeTpl && HEAVY.has(activeTpl);
+  const showToggle = !isAI && isH;
+  const effLimit = showToggle && limitOn ? LIMIT : null;
+
+  const sql = useMemo(() => {
+    if (isAI) return aiSQL || "-- Use the AI assistant to generate a query";
+    if (tpl?.build) return tpl.build(filters, effLimit);
+    return "-- Select a query template";
+  }, [isAI, aiSQL, tpl, filters, effLimit]);
+
+  const warning = useMemo(() => {
+    if (isAI || !activeTpl) return null;
+    if (isExpensive(activeTpl, filters)) return "⚠️ No HMO or date filter — may return millions of rows. Add a filter.";
+    if (isH && !limitOn) return "⚠️ LIMIT is off — large result set possible.";
+    return null;
+  }, [isAI, activeTpl, filters, limitOn, isH]);
+
+  return (
+    <div style={{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"DM Sans,sans-serif" }}>
+      {/* ── Nav Header ── */}
+      <div style={{ padding:"14px 24px", background:C.card, borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:16 }}>
+          <Link href="/" style={{ color:C.sub, textDecoration:"none", fontSize:13, display:"flex", alignItems:"center", gap:6, transition:"color .2s" }}
+            onMouseEnter={e=>e.currentTarget.style.color=C.accent} onMouseLeave={e=>e.currentTarget.style.color=C.sub}>
+            ← Claims Dashboard
+          </Link>
+          <div style={{ width:1, height:20, background:C.border }}/>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ width:32, height:32, borderRadius:8, background:C.accent, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>⚡</div>
+            <span style={{ fontSize:16, fontWeight:700 }}>Query Builder</span>
+            <span style={{ fontSize:11, color:C.muted, fontWeight:500 }}>v3</span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={fetchData} style={abtn(C.sub)} title="Refresh">🔄 Refresh</button>
-          <button onClick={downloadCSV} style={abtn(C.accent)}>⬇ CSV</button>
-          <button onClick={openReport} style={abtn("#A78BFA")}>📋 Report</button>
-          <button onClick={openSlackModal} style={abtn("#5B8DEF")}>💬 Slack</button>
+        <div style={{ display:"flex", gap:8 }}>
+          <Badge color={C.success}>Status Maps Confirmed</Badge>
+          <Badge color={C.blue}>MySQL</Badge>
         </div>
       </div>
 
-      <div style={{ padding: "20px 28px", maxWidth: 1440, margin: "0 auto" }}>
-
-        {/* ── FILTERS BAR ──────────────────────────────── */}
-        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 20px", marginBottom: 16, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, animation: "slideUp .4s ease both" }}>
-          <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>◉ Filters</div>
-          {view !== "compare" && (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 11, color: C.sub }}>From</span>
-                <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={inp}/>
-                <span style={{ fontSize: 11, color: C.sub }}>To</span>
-                <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} style={inp}/>
-              </div>
-              <div style={{ height: 24, width: 1, background: C.border }}/>
-              <button onClick={() => setSelected(new Set(allInsurers))} style={{ ...btn(selected.size === allInsurers.length), fontSize: 11, padding: "6px 12px" }}>All ({allInsurers.length})</button>
-              <button onClick={() => setSelected(new Set())} style={{ ...btn(selected.size === 0), fontSize: 11, padding: "6px 12px" }}>None</button>
-            </>
-          )}
-          <div style={{ flex: 1 }}/>
-          <div style={{ display: "flex", gap: 4 }}>
-            {VIEWS.map(v => (
-              <button key={v} onClick={() => setView(v)} style={btn(view === v)}>
-                {v === "overview" ? "📊 Overview" : v === "table" ? "📋 Table" : v === "trends" ? "📈 Trends" : "🔄 Compare"}
-              </button>
-            ))}
-          </div>
+      {/* ── Content ── */}
+      <div style={{ maxWidth:1400, margin:"0 auto", padding:"20px 24px" }}>
+        {/* Category Tabs */}
+        <div style={{ display:"flex", gap:6, marginBottom:20, overflowX:"auto", paddingBottom:4 }}>
+          {Object.entries(CATS).map(([key, c]) => (
+            <button key={key} onClick={()=>setActiveCat(key)} style={{
+              padding:"10px 18px", borderRadius:10,
+              border:activeCat===key?`2px solid ${C.accent}`:`1.5px solid ${C.border}`,
+              background:activeCat===key?C.accent+"15":C.card,
+              cursor:"pointer", fontSize:13, fontWeight:600, fontFamily:"DM Sans,sans-serif",
+              color:activeCat===key?C.accent:C.sub, whiteSpace:"nowrap", transition:"all .2s",
+            }}>{c.icon} {c.name}</button>
+          ))}
         </div>
 
-        {/* ── INSURER CHIPS (non-compare views) ─────────── */}
-        {view !== "compare" && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18, animation: "slideUp .5s ease .1s both" }}>
-            {allInsurers.map((ins, i) => {
-              const on = selected.has(ins);
-              return (
-                <button key={ins} onClick={() => toggle(ins)} style={{
-                  background: on ? `${C.chart[i % C.chart.length]}22` : "transparent",
-                  border: `1px solid ${on ? C.chart[i % C.chart.length] : C.border}`,
-                  color: on ? C.chart[i % C.chart.length] : C.muted,
-                  borderRadius: 20, padding: "5px 14px", fontSize: 11, cursor: "pointer",
-                  fontWeight: on ? 600 : 400, transition: "all .2s",
-                }}>{on ? "✓ " : ""}{ins}</button>
-              );
-            })}
+        {/* Main Grid */}
+        <div style={{ display:"grid", gridTemplateColumns:"380px 1fr", gap:20, alignItems:"start" }}>
+          {/* Left Panel */}
+          <div style={{ background:C.card, borderRadius:12, border:`1.5px solid ${C.border}`, overflow:"hidden" }}>
+            <div style={{ padding:"12px 18px", background:C.elevated, borderBottom:`1.5px solid ${C.border}`, display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{fontSize:14}}>{isAI?"🤖":"🔧"}</span>
+              <span style={{fontSize:14,fontWeight:600}}>{isAI?"AI Assistant":"Filters"}</span>
+              {!isAI && <button onClick={()=>setFilters({})} style={{marginLeft:"auto",padding:"3px 10px",border:`1px solid ${C.border}`,borderRadius:4,fontSize:11,fontWeight:500,cursor:"pointer",background:C.elevated,color:C.muted}}>Reset</button>}
+            </div>
+            {isAI ? <AIAssistant onResult={setAiSQL}/> : <>
+              {cat?.templates && Object.keys(cat.templates).length > 1 && (
+                <div style={{ padding:"12px 18px", borderBottom:`1px solid ${C.border}`, display:"flex", flexDirection:"column", gap:6 }}>
+                  <span style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em"}}>Query Type</span>
+                  {Object.entries(cat.templates).map(([key,t])=>(
+                    <button key={key} onClick={()=>setActiveTpl(key)} style={{
+                      textAlign:"left",padding:"8px 12px",borderRadius:6,
+                      border:activeTpl===key?`1.5px solid ${C.accent}`:`1px solid ${C.border}`,
+                      background:activeTpl===key?C.accent+"10":C.card,cursor:"pointer",transition:"all .15s",
+                    }}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{fontSize:13,fontWeight:600,color:activeTpl===key?C.accent:C.text}}>{t.name}</span>
+                        {t.heavy && <Badge color={C.warn}>Heavy</Badge>}
+                      </div>
+                      <div style={{fontSize:11,color:C.muted,marginTop:2}}>{t.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <FilterPanel filters={tpl?.filters} values={filters} onChange={(k,v)=>setFilters(p=>({...p,[k]:v}))} />
+            </>}
           </div>
-        )}
 
-        {/* ── STATS (non-compare views) ────────────────── */}
-        {view !== "compare" && (
-          <div style={{ display: "flex", gap: 14, marginBottom: 20, flexWrap: "wrap" }}>
-            <StatCard label="Total Claims" value={fmt(total)} sub={`${dailyTotals.length} days`} icon="🏥" delay={.1}/>
-            <StatCard label="Daily Average" value={fmt(avg)} sub="per day" icon="📊" color="#5B8DEF" delay={.15}/>
-            <StatCard label="Peak Day" value={peak ? fmt(peak.total) : "—"} sub={peak?.date||"—"} icon="🔥" color={C.warn} delay={.2}/>
-            <StatCard label="Active Insurers" value={selected.size} sub={`of ${allInsurers.length}`} icon="🏢" color="#A78BFA" delay={.25}/>
-          </div>
-        )}
+          {/* Right Panel */}
+          <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+            {warning && <div style={{padding:"10px 14px",background:C.warn+"15",border:`1.5px solid ${C.warn}40`,borderRadius:8,fontSize:12.5,color:C.warn,lineHeight:1.4}}>{warning}</div>}
+            <SQLDisplay sql={sql} name={isAI?"ai_generated":(activeTpl||"query")} limitOn={showToggle?limitOn:null} onToggle={showToggle?()=>setLimitOn(p=>!p):null} />
 
-        {/* ═══════════ OVERVIEW VIEW ═══════════════════════ */}
-        {view === "overview" && (
-          <div style={{ animation: "fadeIn .4s ease" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
-              <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Daily Claims Volume</div>
-                <ResponsiveContainer width="100%" height={270}>
-                  <AreaChart data={dailyTotals}>
-                    <defs><linearGradient id="aG" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.accent} stopOpacity={.3}/><stop offset="95%" stopColor={C.accent} stopOpacity={0}/></linearGradient></defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false}/>
-                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} tickFormatter={d => d.slice(5)}/>
-                    <YAxis tick={{ fontSize: 10, fill: C.muted }}/>
-                    <Tooltip content={<Tip/>}/>
-                    <Area type="monotone" dataKey="total" stroke={C.accent} fill="url(#aG)" strokeWidth={2} name="Total Claims"/>
-                  </AreaChart>
-                </ResponsiveContainer>
+            {/* Quick Reference Cards */}
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
+              <div style={{padding:"14px 16px",borderRadius:10,background:C.card,border:`1.5px solid ${C.border}`}}>
+                <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>How to use</div>
+                <div style={{fontSize:12.5,color:C.sub,lineHeight:1.4}}>Copy → Metabase → New Question → Native Query → Run</div>
               </div>
-              <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Distribution</div>
-                <ResponsiveContainer width="100%" height={270}>
-                  <PieChart><Pie data={insurerTotals} dataKey="total" nameKey="insurer" cx="50%" cy="50%" outerRadius={85} innerRadius={48} paddingAngle={2}>
-                    {insurerTotals.map((_,i) => <Cell key={i} fill={C.chart[i%C.chart.length]}/>)}
-                  </Pie><Tooltip content={<Tip/>}/></PieChart>
-                </ResponsiveContainer>
+              <div style={{padding:"14px 16px",borderRadius:10,background:C.success+"10",border:`1.5px solid ${C.success}30`}}>
+                <div style={{fontSize:11,fontWeight:600,color:C.success,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>✅ HMO Status</div>
+                <div style={{fontSize:12.5,color:C.success,lineHeight:1.4}}>-1=Rejected, 0=Pending, 1=Approved</div>
+              </div>
+              <div style={{padding:"14px 16px",borderRadius:10,background:C.blue+"10",border:`1.5px solid ${C.blue}30`}}>
+                <div style={{fontSize:11,fontWeight:600,color:C.blue,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>💡 Safety</div>
+                <div style={{fontSize:12.5,color:C.blue,lineHeight:1.4}}>Heavy queries auto-add LIMIT 1000</div>
               </div>
             </div>
-            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14, display: "flex", justifyContent: "space-between" }}>
-                <span>Insurer Rankings</span>
-                <button onClick={() => setSortDir(d => d === "desc" ? "asc" : "desc")} style={{ ...btn(false), fontSize: 10, padding: "4px 10px" }}>{sortDir === "desc" ? "↓ Highest" : "↑ Lowest"}</button>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {insurerTotals.map((it, i) => (
-                  <div key={it.insurer} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <span style={{ fontSize: 11, color: C.muted, width: 20, textAlign: "right", fontFamily: "monospace" }}>{i+1}</span>
-                    <span style={{ fontSize: 12, color: C.text, width: 200, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.insurer}</span>
-                    <div style={{ flex: 1, height: 22, background: C.elevated, borderRadius: 6, overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${pct(it.total,total)}%`, background: `linear-gradient(90deg,${C.chart[i%C.chart.length]},${C.chart[i%C.chart.length]}88)`, borderRadius: 6, transition: "width .5s ease", display: "flex", alignItems: "center", paddingLeft: 8 }}>
-                        {parseFloat(pct(it.total,total)) > 8 && <span style={{ fontSize: 9, fontWeight: 600, color: C.bg }}>{pct(it.total,total)}%</span>}
-                      </div>
+
+            {/* Status Reference */}
+            <div style={{background:C.card,borderRadius:10,border:`1.5px solid ${C.border}`,padding:"16px 20px"}}>
+              <div style={{fontSize:12,fontWeight:600,color:C.sub,textTransform:"uppercase",letterSpacing:".05em",marginBottom:12}}>🔑 Status Reference (Confirmed)</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+                {Object.entries(STATUS_MAPS).map(([k,m])=>(
+                  <div key={k}>
+                    <div style={{fontSize:12,fontWeight:600,color:C.text,marginBottom:6}}>{m.label}</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                      {Object.entries(m.values).map(([val,label])=>(
+                        <span key={val} style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:500,background:C.elevated,color:C.sub,border:`1px solid ${C.border}`,fontFamily:"JetBrains Mono,monospace"}}>{val} = {label}</span>
+                      ))}
                     </div>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: C.text, fontFamily: "monospace", width: 80, textAlign: "right" }}>{fmt(it.total)}</span>
                   </div>
                 ))}
               </div>
             </div>
           </div>
-        )}
-
-        {/* ═══════════ TABLE VIEW ═══════════════════════════ */}
-        {view === "table" && (
-          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", animation: "fadeIn .4s ease" }}>
-            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>📋 Pivot Table — Insurers × Dates</div>
-              <input placeholder="Search insurer..." value={search} onChange={e => setSearch(e.target.value)} style={{ ...inp, width: 200, fontSize: 12 }}/>
-            </div>
-            <div style={{ overflow: "auto", maxHeight: 520 }}>
-              <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
-                <thead><tr>
-                  <th style={{ position: "sticky", left: 0, top: 0, zIndex: 10, background: C.elevated, padding: "10px 14px", textAlign: "left", borderBottom: `1px solid ${C.border}`, color: C.sub, fontWeight: 600, minWidth: 180 }}>Insurer</th>
-                  {pivot.dates.map(d => <th key={d} style={{ position: "sticky", top: 0, zIndex: 5, background: C.elevated, padding: "10px 10px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.sub, fontWeight: 500, whiteSpace: "nowrap", fontSize: 10 }}>{d.slice(5)}</th>)}
-                  <th style={{ position: "sticky", top: 0, right: 0, zIndex: 10, background: C.elevated, padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.accent, fontWeight: 700 }}>Total</th>
-                </tr></thead>
-                <tbody>
-                  <tr style={{ background: `${C.accent}11` }}>
-                    <td style={{ position: "sticky", left: 0, background: `${C.accent}22`, padding: "10px 14px", fontWeight: 700, color: C.accent, borderBottom: `2px solid ${C.accent}44` }}>TOTAL</td>
-                    {pivot.dates.map(d => { let s=0; pivot.insurers.forEach(ins => s += pivot.map[`${d}_${ins}`]||0); return <td key={d} style={{ padding: "10px 10px", textAlign: "right", fontFamily: "monospace", fontWeight: 700, color: C.accent, borderBottom: `2px solid ${C.accent}44` }}>{fmt(s)}</td>; })}
-                    <td style={{ position: "sticky", right: 0, background: `${C.accent}22`, padding: "10px 14px", textAlign: "right", fontFamily: "monospace", fontWeight: 700, color: C.accent, fontSize: 13, borderBottom: `2px solid ${C.accent}44` }}>{fmt(total)}</td>
-                  </tr>
-                  {pivot.insurers.filter(ins => ins.toLowerCase().includes(search.toLowerCase())).map((ins, idx) => {
-                    let rt = 0;
-                    return (
-                      <tr key={ins} style={{ background: idx%2 ? `${C.elevated}44` : "transparent" }}>
-                        <td style={{ position: "sticky", left: 0, background: idx%2 ? C.elevated : C.card, padding: "8px 14px", fontWeight: 500, color: C.text, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-                          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: C.chart[allInsurers.indexOf(ins)%C.chart.length], marginRight: 8 }}/>{ins}
-                        </td>
-                        {pivot.dates.map(d => { const v = pivot.map[`${d}_${ins}`]||0; rt+=v; return <td key={d} style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace", color: v===0 ? C.muted : C.text, fontSize: 10, borderBottom: `1px solid ${C.border}` }}>{fmt(v)}</td>; })}
-                        <td style={{ position: "sticky", right: 0, background: idx%2 ? C.elevated : C.card, padding: "8px 14px", textAlign: "right", fontFamily: "monospace", fontWeight: 600, color: C.text, borderBottom: `1px solid ${C.border}` }}>{fmt(rt)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* ═══════════ TRENDS VIEW ═════════════════════════ */}
-        {view === "trends" && (
-          <div style={{ animation: "fadeIn .4s ease" }}>
-            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, marginBottom: 14 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Claims Trend by Insurer</div>
-              <ResponsiveContainer width="100%" height={380}>
-                <LineChart data={trendData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false}/>
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} tickFormatter={d => d.slice(5)}/>
-                  <YAxis tick={{ fontSize: 10, fill: C.muted }}/>
-                  <Tooltip content={<Tip/>}/><Legend wrapperStyle={{ fontSize: 10 }}/>
-                  {[...selected].sort().map(ins => <Line key={ins} type="monotone" dataKey={ins} stroke={C.chart[allInsurers.indexOf(ins)%C.chart.length]} strokeWidth={2} dot={false} name={ins}/>)}
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Daily Total Trend</div>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={dailyTotals}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false}/>
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} tickFormatter={d => d.slice(5)}/>
-                  <YAxis tick={{ fontSize: 10, fill: C.muted }}/>
-                  <Tooltip content={<Tip/>}/>
-                  <Bar dataKey="total" fill={C.accent} radius={[3,3,0,0]} name="Total Claims"/>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
-
-        {/* ═══════════ COMPARE VIEW (WoW / MoM) ══════════ */}
-        {view === "compare" && (
-          <div style={{ animation: "fadeIn .4s ease" }}>
-
-            {/* Compare controls */}
-            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 20px", marginBottom: 14 }}>
-              {/* Mode toggle */}
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-                <button onClick={() => setCompMode("month")} style={btn(compMode === "month")}>📊 Month-over-Month</button>
-                <button onClick={() => setCompMode("custom")} style={btn(compMode === "custom")}>📅 Custom Periods</button>
-                <div style={{ flex: 1 }}/>
-                <div style={{ display: "flex", gap: 4 }}>
-                  {["overview","chart","table"].map(v => (
-                    <button key={v} onClick={() => setCompView(v)} style={{ ...btn(compView === v), fontSize: 11, padding: "6px 12px" }}>
-                      {v === "overview" ? "📊 Overview" : v === "chart" ? "📈 Overlay" : "📋 Table"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Period selection */}
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>
-                    {compMode === "month" ? "Select Months" : "Define Periods"}
-                  </div>
-                  <span style={{ fontSize: 11, color: C.sub }}>{compMode === "month" ? compMonths.size : customPeriods.length} selected</span>
-                  <div style={{ flex: 1 }}/>
-                  {compMode === "month" && <>
-                    <button onClick={() => setCompMonths(new Set(availableMonths))} style={{ ...btn(false), fontSize: 10, padding: "3px 10px" }}>All</button>
-                    <button onClick={() => setCompMonths(new Set([availableMonths[availableMonths.length-1]]))} style={{ ...btn(false), fontSize: 10, padding: "3px 10px" }}>Reset</button>
-                  </>}
-                  {compMode === "custom" && <button onClick={() => setCustomPeriods([])} style={{ ...btn(false), fontSize: 10, padding: "3px 10px" }}>Clear All</button>}
-                </div>
-
-                {/* Range picker */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "10px 14px", background: C.elevated, borderRadius: 8, border: `1px solid ${C.border}`, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 11, color: C.accent, fontWeight: 600 }}>📅 Range:</span>
-                  {compMode === "month" ? (<>
-                    <select value={monthRangeFrom} onChange={e => setMonthRangeFrom(e.target.value)} style={{ ...inp, fontSize: 11, padding: "5px 8px" }}>
-                      <option value="">From month...</option>
-                      {availableMonths.map(m => <option key={m} value={m}>{new Date(m+"-15").toLocaleDateString("en",{month:"short",year:"numeric"})}</option>)}
-                    </select>
-                    <span style={{ color: C.muted }}>→</span>
-                    <select value={monthRangeTo} onChange={e => setMonthRangeTo(e.target.value)} style={{ ...inp, fontSize: 11, padding: "5px 8px" }}>
-                      <option value="">To month...</option>
-                      {availableMonths.map(m => <option key={m} value={m}>{new Date(m+"-15").toLocaleDateString("en",{month:"short",year:"numeric"})}</option>)}
-                    </select>
-                    <button onClick={() => applyMonthRange(monthRangeFrom, monthRangeTo)} disabled={!monthRangeFrom || !monthRangeTo}
-                      style={{ background: C.accent, color: C.bg, border: "none", borderRadius: 6, padding: "5px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", opacity: (!monthRangeFrom || !monthRangeTo) ? .4 : 1 }}>Apply Range</button>
-                  </>) : (<>
-                    <input type="date" value={newPeriodFrom} onChange={e => setNewPeriodFrom(e.target.value)} style={{ ...inp, fontSize: 11, padding: "5px 8px" }} min={dateRange.min} max={dateRange.max}/>
-                    <span style={{ color: C.muted }}>→</span>
-                    <input type="date" value={newPeriodTo} onChange={e => setNewPeriodTo(e.target.value)} style={{ ...inp, fontSize: 11, padding: "5px 8px" }} min={dateRange.min} max={dateRange.max}/>
-                    <input value={newPeriodLabel} onChange={e => setNewPeriodLabel(e.target.value)} placeholder="Label (optional)" style={{ ...inp, fontSize: 11, padding: "5px 8px", width: 130 }}/>
-                    <button onClick={addCustomPeriod} disabled={!newPeriodFrom || !newPeriodTo}
-                      style={{ background: C.accent, color: C.bg, border: "none", borderRadius: 6, padding: "5px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", opacity: (!newPeriodFrom || !newPeriodTo) ? .4 : 1 }}>+ Add Period</button>
-                  </>)}
-                  {compMode === "month" && <span style={{ fontSize: 10, color: C.muted, fontStyle: "italic" }}>or pick individually below</span>}
-                </div>
-
-                {/* Individual chips */}
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {compMode === "month" ? (
-                    availableMonths.map(m => {
-                      const on = compMonths.has(m);
-                      const idx = [...compMonths].sort().indexOf(m);
-                      const color = on ? C.periods[idx%C.periods.length] : C.muted;
-                      return (
-                        <button key={m} onClick={() => toggleCompMonth(m)} style={{
-                          background: on ? `${color}22` : "transparent", border: `1px solid ${on ? color : C.border}`,
-                          color: on ? color : C.muted, borderRadius: 20, padding: "6px 16px", fontSize: 11,
-                          cursor: "pointer", fontWeight: on ? 600 : 400, transition: "all .2s",
-                        }}>{on ? "✓ " : ""}{new Date(m+"-15").toLocaleDateString("en",{month:"short",year:"numeric"})}</button>
-                      );
-                    })
-                  ) : (
-                    customPeriods.length === 0 ? (
-                      <div style={{ fontSize: 12, color: C.muted, padding: "8px 0" }}>No periods added yet. Use the date pickers above to add comparison periods.</div>
-                    ) : [...customPeriods].sort((a,b) => a.from.localeCompare(b.from)).map((p, idx) => (
-                      <div key={p.id} style={{
-                        background: `${C.periods[idx%C.periods.length]}15`, border: `1px solid ${C.periods[idx%C.periods.length]}`,
-                        borderRadius: 10, padding: "8px 14px", fontSize: 11, display: "flex", alignItems: "center", gap: 10,
-                      }}>
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: C.periods[idx%C.periods.length], flexShrink: 0 }}/>
-                        <span style={{ fontWeight: 600, color: C.periods[idx%C.periods.length] }}>{p.label}</span>
-                        <span style={{ color: C.sub, fontSize: 10 }}>{p.from} → {p.to}</span>
-                        <span style={{ color: C.sub, fontSize: 10 }}>({Math.round((new Date(p.to) - new Date(p.from)) / 86400000) + 1} days)</span>
-                        <button onClick={() => removeCustomPeriod(p.id)} style={{ background: "transparent", border: "none", color: C.danger, cursor: "pointer", fontSize: 14, padding: "0 4px", fontWeight: 700 }}>×</button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              {/* Insurer checkboxes */}
-              <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>Insurers</div>
-                  <button onClick={() => setCompInsurers(new Set(allInsurers))} style={{ ...btn(compInsurers.size === allInsurers.length), fontSize: 10, padding: "3px 10px" }}>All</button>
-                  <button onClick={() => setCompInsurers(new Set())} style={{ ...btn(compInsurers.size === 0), fontSize: 10, padding: "3px 10px" }}>None</button>
-                  <span style={{ fontSize: 11, color: C.sub }}>{compInsurers.size} selected</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4 }}>
-                  {allInsurers.map((ins, i) => (
-                    <Checkbox key={ins} checked={compInsurers.has(ins)} onChange={() => toggleCompInsurer(ins)}
-                      label={ins} color={C.chart[i%C.chart.length]}/>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Period summary cards */}
-            <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
-              {compWithDeltas.map((p, i) => (
-                <div key={i} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 22px", flex: 1, minWidth: 200, position: "relative", overflow: "hidden" }}>
-                  <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: `linear-gradient(90deg,${p.color},transparent)` }}/>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: p.color }}>
-                      {compMode === "month" ? new Date(p.month+"-15").toLocaleDateString("en",{month:"long",year:"numeric"}) : p.label}
-                    </div>
-                    <Delta value={p.delta}/>
-                  </div>
-                  <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "'JetBrains Mono',monospace", letterSpacing: -1 }}>{fmt(p.total)}</div>
-                  <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
-                    <div style={{ fontSize: 11, color: C.sub }}>Avg: <span style={{ color: C.text, fontWeight: 600, fontFamily: "monospace" }}>{fmt(p.avg)}</span>/day</div>
-                    <div style={{ fontSize: 11, color: C.sub }}>{p.days} days</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Compare Overview */}
-            {compView === "overview" && (
-              <div>
-                <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, marginBottom: 14 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>{compMode === "month" ? "Month-over-Month" : "Period-over-Period"} Total Claims</div>
-                  <ResponsiveContainer width="100%" height={280}>
-                    <BarChart data={compWithDeltas.map(p => ({
-                      name: compMode === "month" ? new Date(p.month+"-15").toLocaleDateString("en",{month:"short",year:"2-digit"}) : p.label,
-                      total: p.total, avg: p.avg,
-                    }))}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false}/>
-                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: C.sub }}/>
-                      <YAxis tick={{ fontSize: 10, fill: C.muted }}/>
-                      <Tooltip content={<Tip/>}/>
-                      <Bar dataKey="total" name="Total Claims" radius={[6,6,0,0]}>
-                        {compWithDeltas.map((p,i) => <Cell key={i} fill={p.color}/>)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                {/* Growth summary */}
-                <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Growth Summary</div>
-                  <div style={{ overflow: "auto" }}>
-                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-                      <thead><tr>
-                        <th style={{ padding: "10px 14px", textAlign: "left", borderBottom: `1px solid ${C.border}`, color: C.sub }}>Period</th>
-                        <th style={{ padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.sub }}>Total</th>
-                        <th style={{ padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.sub }}>Daily Avg</th>
-                        <th style={{ padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.sub }}>Days</th>
-                        <th style={{ padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.sub }}>Δ Total</th>
-                        <th style={{ padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.sub }}>Δ Avg</th>
-                      </tr></thead>
-                      <tbody>{compWithDeltas.map((p,i) => (
-                        <tr key={i} style={{ background: i%2 ? `${C.elevated}44` : "transparent" }}>
-                          <td style={{ padding: "10px 14px", fontWeight: 600, color: p.color, borderBottom: `1px solid ${C.border}` }}>
-                            <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: p.color, marginRight: 8 }}/>
-                            {compMode === "month" ? new Date(p.month+"-15").toLocaleDateString("en",{month:"long",year:"numeric"}) : p.label}
-                          </td>
-                          <td style={{ padding: "10px 14px", textAlign: "right", fontFamily: "monospace", fontWeight: 600, color: C.text, borderBottom: `1px solid ${C.border}` }}>{fmt(p.total)}</td>
-                          <td style={{ padding: "10px 14px", textAlign: "right", fontFamily: "monospace", color: C.text, borderBottom: `1px solid ${C.border}` }}>{fmt(p.avg)}</td>
-                          <td style={{ padding: "10px 14px", textAlign: "right", fontFamily: "monospace", color: C.sub, borderBottom: `1px solid ${C.border}` }}>{p.days}</td>
-                          <td style={{ padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}` }}><Delta value={p.delta}/></td>
-                          <td style={{ padding: "10px 14px", textAlign: "right", borderBottom: `1px solid ${C.border}` }}><Delta value={p.avgDelta}/></td>
-                        </tr>
-                      ))}</tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Compare Overlay Chart */}
-            {compView === "chart" && (
-              <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-                  {compMode === "month" ? "Daily Pattern Overlay (by day of month)" : "Daily Pattern Overlay (by day in period)"}
-                </div>
-                <div style={{ fontSize: 11, color: C.muted, marginBottom: 16 }}>Compare patterns across selected {compMode === "month" ? "months" : "periods"}</div>
-                <ResponsiveContainer width="100%" height={380}>
-                  <LineChart data={compOverlayData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false}/>
-                    <XAxis dataKey="day" tick={{ fontSize: 10, fill: C.muted }}/>
-                    <YAxis tick={{ fontSize: 10, fill: C.muted }}/>
-                    <Tooltip content={<Tip/>}/><Legend wrapperStyle={{ fontSize: 11 }}/>
-                    {compPeriods.map(p => {
-                      const key = compMode === "month" ? p.month : p.label;
-                      const label = compMode === "month" ? new Date(p.month+"-15").toLocaleDateString("en",{month:"short",year:"2-digit"}) : p.label;
-                      return <Line key={key} type="monotone" dataKey={key} stroke={p.color} strokeWidth={2.5} dot={{ r: 3 }} name={label}/>;
-                    })}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            {/* Compare Table */}
-            {compView === "table" && (
-              <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
-                <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontSize: 14, fontWeight: 600 }}>📋 Insurer Comparison Across Periods</div>
-                <div style={{ overflow: "auto", maxHeight: 520 }}>
-                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ position: "sticky", left: 0, top: 0, zIndex: 10, background: C.elevated, padding: "10px 14px", textAlign: "left", borderBottom: `1px solid ${C.border}`, color: C.sub, fontWeight: 600, minWidth: 180 }}>Insurer</th>
-                        {compPeriods.map((p,i) => {
-                          const label = compMode === "month" ? new Date(p.month+"-15").toLocaleDateString("en",{month:"short",year:"2-digit"}) : p.label;
-                          return <th key={i} colSpan={i > 0 ? 2 : 1} style={{ position: "sticky", top: 0, zIndex: 5, background: C.elevated, padding: "10px 12px", textAlign: "center", borderBottom: `1px solid ${C.border}`, color: p.color, fontWeight: 600 }}>{label}</th>;
-                        })}
-                      </tr>
-                      <tr>
-                        <th style={{ position: "sticky", left: 0, zIndex: 10, background: C.elevated, padding: "4px 14px", borderBottom: `1px solid ${C.border}` }}/>
-                        {compPeriods.map((p,i) => {
-                          if (i === 0) return <th key={i} style={{ background: C.elevated, padding: "4px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.muted, fontSize: 9 }}>Claims</th>;
-                          return [
-                            <th key={`${i}a`} style={{ background: C.elevated, padding: "4px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.muted, fontSize: 9 }}>Claims</th>,
-                            <th key={`${i}b`} style={{ background: C.elevated, padding: "4px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, color: C.muted, fontSize: 9 }}>Δ</th>
-                          ];
-                        })}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {compInsurerTable.map((row, idx) => (
-                        <tr key={row.insurer} style={{ background: idx%2 ? `${C.elevated}44` : "transparent" }}>
-                          <td style={{ position: "sticky", left: 0, background: idx%2 ? C.elevated : C.card, padding: "8px 14px", fontWeight: 500, color: C.text, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-                            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: C.chart[allInsurers.indexOf(row.insurer)%C.chart.length], marginRight: 8 }}/>{row.insurer}
-                          </td>
-                          {compPeriods.map((p,i) => {
-                            const key = compMode === "month" ? p.month : p.label;
-                            const val = row[key] || 0;
-                            const delta = row[`${key}_delta`];
-                            if (i === 0) return <td key={i} style={{ padding: "8px 12px", textAlign: "right", fontFamily: "monospace", color: C.text, borderBottom: `1px solid ${C.border}` }}>{fmt(val)}</td>;
-                            return [
-                              <td key={`${i}a`} style={{ padding: "8px 12px", textAlign: "right", fontFamily: "monospace", color: C.text, borderBottom: `1px solid ${C.border}` }}>{fmt(val)}</td>,
-                              <td key={`${i}b`} style={{ padding: "8px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}` }}><Delta value={delta} small/></td>
-                            ];
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        </div>
       </div>
-
-      {/* ═══════════ SLACK MODAL ══════════════════════════ */}
-      {showSlack && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn .2s ease" }} onClick={() => setShowSlack(false)}>
-          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 28, width: 480, maxHeight: "85vh", overflowY: "auto", animation: "slideUp .3s ease" }} onClick={e => e.stopPropagation()}>
-            {slackSent ? (
-              <div style={{ textAlign: "center", padding: 20 }}>
-                <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: C.accent }}>Sent to Slack!</div>
-                <div style={{ fontSize: 13, color: C.sub, marginTop: 8 }}>
-                  {slackResults.map((r,i) => <div key={i} style={{ color: r.success ? C.success : C.danger }}>{r.channel}: {r.success ? "✓ Delivered" : `✗ ${r.error}`}</div>)}
-                </div>
-              </div>
-            ) : (
-              <>
-                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>💬 Send to Slack</div>
-                <div style={{ fontSize: 13, color: C.sub, marginBottom: 16 }}>Share this claims report with your team</div>
-
-                {/* Channel checkboxes */}
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 600 }}>Channels</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {["#health-ops","#customer-success"].map(ch => (
-                      <Checkbox key={ch} checked={slackChans.has(ch)} onChange={() => { const n = new Set(slackChans); n.has(ch) ? n.delete(ch) : n.add(ch); setSlackChans(n); }} label={ch} color="#5B8DEF"/>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Insurer selection for Slack */}
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                    <div style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>Include Insurers</div>
-                    <button onClick={() => setSlackInsurers(new Set(allInsurers))} style={{ ...btn(false), fontSize: 10, padding: "2px 8px" }}>All</button>
-                    <button onClick={() => setSlackInsurers(new Set())} style={{ ...btn(false), fontSize: 10, padding: "2px 8px" }}>None</button>
-                  </div>
-                  <div style={{ maxHeight: 160, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
-                    {allInsurers.map((ins,i) => (
-                      <Checkbox key={ins} checked={slackInsurers.has(ins)} onChange={() => { const n = new Set(slackInsurers); n.has(ins) ? n.delete(ins) : n.add(ins); setSlackInsurers(n); }}
-                        label={ins} color={C.chart[i%C.chart.length]}/>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Preview */}
-                <div style={{ background: C.elevated, borderRadius: 8, padding: 14, marginBottom: 16, border: `1px solid ${C.border}`, fontSize: 12, color: C.sub, lineHeight: 1.8 }}>
-                  <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>Preview:</div>
-                  📊 <strong style={{ color: C.accent }}>Claims Report</strong> ({startDate} → {endDate})<br/>
-                  🏥 Total: <strong style={{ color: C.text }}>{fmt(total)}</strong> claims<br/>
-                  📈 Daily Avg: <strong style={{ color: C.text }}>{fmt(avg)}</strong><br/>
-                  🔥 Peak: <strong style={{ color: C.text }}>{peak ? `${fmt(peak.total)} (${peak.date})` : "—"}</strong><br/>
-                  🏢 Insurers: <strong style={{ color: C.text }}>{slackInsurers.size}</strong> selected
-                </div>
-
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button onClick={() => setShowSlack(false)} style={{ ...abtn(C.muted), padding: "10px 20px" }}>Cancel</button>
-                  <button onClick={sendSlack} disabled={sending || slackChans.size === 0} style={{
-                    background: C.accent, color: C.bg, border: "none", borderRadius: 8, padding: "10px 24px",
-                    fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: (sending || slackChans.size === 0) ? .5 : 1,
-                  }}>{sending ? "Sending..." : "Send Report"}</button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ═══════════ REPORT MODAL ═════════════════════════ */}
-      {showReport && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn .2s ease" }} onClick={() => setShowReport(false)}>
-          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 28, width: 560, maxHeight: "90vh", overflowY: "auto", animation: "slideUp .3s ease" }} onClick={e => e.stopPropagation()}>
-            {reportSent ? (
-              <div style={{ textAlign: "center", padding: 20 }}>
-                <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: "#A78BFA" }}>Report Sent!</div>
-                <div style={{ fontSize: 13, color: C.sub, marginTop: 8 }}>
-                  {reportResults.map((r,i) => <div key={i} style={{ color: r.success ? C.success : C.danger }}>{r.channel}: {r.success ? "✓ Delivered" : `✗ ${r.error}`}</div>)}
-                </div>
-              </div>
-            ) : (
-              <>
-                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>📋 Report Builder</div>
-                <div style={{ fontSize: 13, color: C.sub, marginBottom: 16 }}>Build a comparison report and send to Slack</div>
-
-                {/* Report type presets */}
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 600 }}>Report Type</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {[
-                      { key: "weekly", label: "📅 Last Week", desc: "Single week summary" },
-                      { key: "wow", label: "📊 WoW", desc: "Week vs previous week" },
-                      { key: "monthly", label: "🗓️ Last Month", desc: "Single month summary" },
-                      { key: "mom", label: "📈 MoM", desc: "Month vs previous month" },
-                      { key: "monthweek", label: "📋 Month + Week", desc: "Last month & last week" },
-                      { key: "custom", label: "✏️ Custom", desc: "Pick your own periods" },
-                    ].map(t => (
-                      <button key={t.key} onClick={() => applyReportPreset(t.key)} style={{
-                        background: reportType === t.key ? `#A78BFA22` : C.elevated,
-                        border: `1px solid ${reportType === t.key ? "#A78BFA" : C.border}`,
-                        color: reportType === t.key ? "#A78BFA" : C.sub,
-                        borderRadius: 8, padding: "8px 14px", fontSize: 11, cursor: "pointer",
-                        fontWeight: reportType === t.key ? 700 : 400, transition: "all .15s", textAlign: "left",
-                      }}>
-                        <div>{t.label}</div>
-                        <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>{t.desc}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Custom period builder */}
-                {reportType === "custom" && (
-                  <div style={{ marginBottom: 14, padding: 12, background: C.elevated, borderRadius: 8, border: `1px solid ${C.border}` }}>
-                    <div style={{ fontSize: 11, color: "#A78BFA", fontWeight: 600, marginBottom: 8 }}>Add Custom Period</div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                      <input type="date" value={reportCustomFrom} onChange={e => setReportCustomFrom(e.target.value)} style={{ ...inp, fontSize: 11, padding: "5px 8px" }} min={dateRange.min} max={dateRange.max}/>
-                      <span style={{ color: C.muted }}>→</span>
-                      <input type="date" value={reportCustomTo} onChange={e => setReportCustomTo(e.target.value)} style={{ ...inp, fontSize: 11, padding: "5px 8px" }} min={dateRange.min} max={dateRange.max}/>
-                      <input value={reportCustomLabel} onChange={e => setReportCustomLabel(e.target.value)} placeholder="Label" style={{ ...inp, fontSize: 11, padding: "5px 8px", width: 110 }}/>
-                      <button onClick={addReportPeriod} disabled={!reportCustomFrom || !reportCustomTo}
-                        style={{ background: "#A78BFA", color: C.bg, border: "none", borderRadius: 6, padding: "5px 12px", fontSize: 11, fontWeight: 600, cursor: "pointer", opacity: (!reportCustomFrom || !reportCustomTo) ? .4 : 1 }}>+ Add</button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Selected periods with live data */}
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 600 }}>Periods ({reportPeriods.length})</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {reportPeriods.length === 0 ? (
-                      <div style={{ fontSize: 12, color: C.muted, padding: 8 }}>No periods selected. Pick a report type above.</div>
-                    ) : [...reportPeriods].sort((a,b) => a.from.localeCompare(b.from)).map((p, idx) => {
-                      const comp = reportComputed[idx];
-                      return (
-                        <div key={p.id} style={{
-                          background: C.elevated, border: `1px solid ${C.border}`,
-                          borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10,
-                          borderLeft: `3px solid ${C.periods[idx % C.periods.length]}`,
-                        }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{p.label}</div>
-                            <div style={{ fontSize: 10, color: C.muted }}>{p.from} → {p.to}</div>
-                          </div>
-                          <div style={{ textAlign: "right" }}>
-                            <div style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace", color: C.text }}>{comp ? fmt(comp.total) : "—"}</div>
-                            <div style={{ fontSize: 10, color: C.sub }}>{comp ? `${comp.days}d • avg ${fmt(comp.avg)}` : ""}</div>
-                          </div>
-                          {idx > 0 && comp && reportComputed[idx-1] && (
-                            <Delta value={pctChange(comp.total, reportComputed[idx-1].total)}/>
-                          )}
-                          {reportType === "custom" && (
-                            <button onClick={() => setReportPeriods(prev => prev.filter(x => x.id !== p.id))} style={{ background: "transparent", border: "none", color: C.danger, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>×</button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Channels */}
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 600 }}>Send to Channels</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {["#health-ops","#customer-success"].map(ch => (
-                      <Checkbox key={ch} checked={reportChans.has(ch)} onChange={() => { const n = new Set(reportChans); n.has(ch) ? n.delete(ch) : n.add(ch); setReportChans(n); }} label={ch} color="#5B8DEF"/>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Insurer selection */}
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                    <div style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>Insurers</div>
-                    <button onClick={() => setReportInsurers(new Set(allInsurers))} style={{ ...btn(false), fontSize: 10, padding: "2px 8px" }}>All</button>
-                    <button onClick={() => setReportInsurers(new Set())} style={{ ...btn(false), fontSize: 10, padding: "2px 8px" }}>None</button>
-                    <span style={{ fontSize: 10, color: C.sub }}>{reportInsurers.size} selected</span>
-                  </div>
-                  <div style={{ maxHeight: 120, overflowY: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 3 }}>
-                    {allInsurers.map((ins,i) => (
-                      <Checkbox key={ins} checked={reportInsurers.has(ins)} onChange={() => { const n = new Set(reportInsurers); n.has(ins) ? n.delete(ins) : n.add(ins); setReportInsurers(n); }}
-                        label={ins} color={C.chart[i%C.chart.length]}/>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Preview */}
-                <div style={{ background: C.elevated, borderRadius: 8, padding: 14, marginBottom: 16, border: `1px solid ${C.border}`, fontSize: 11, color: C.sub, lineHeight: 1.8, maxHeight: 180, overflowY: "auto" }}>
-                  <div style={{ fontWeight: 600, color: C.text, marginBottom: 6, fontSize: 12 }}>Preview:</div>
-                  📋 <strong style={{ color: "#A78BFA" }}>Claims Intelligence Report</strong><br/>
-                  {[...reportPeriods].sort((a,b) => a.from.localeCompare(b.from)).map((p, idx) => {
-                    const comp = reportComputed[idx];
-                    return (
-                      <div key={p.id} style={{ marginTop: 6, paddingLeft: 8, borderLeft: `2px solid ${C.periods[idx % C.periods.length]}` }}>
-                        <strong style={{ color: C.text }}>{p.label}</strong> ({p.from} → {p.to})<br/>
-                        🏥 Total: <strong style={{ color: C.text }}>{comp ? fmt(comp.total) : "—"}</strong> | Avg: <strong style={{ color: C.text }}>{comp ? fmt(comp.avg) : "—"}</strong>/day | {comp?.days || 0} days
-                        {idx > 0 && comp && reportComputed[idx-1] && (() => {
-                          const delta = pctChange(comp.total, reportComputed[idx-1].total);
-                          return <span style={{ color: delta > 0 ? C.success : delta < 0 ? C.danger : C.muted, fontWeight: 600 }}> {delta > 0 ? "↑" : delta < 0 ? "↓" : "→"} {Math.abs(delta).toFixed(1)}%</span>;
-                        })()}
-                      </div>
-                    );
-                  })}
-                  {reportComputed.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <strong style={{ color: C.text }}>Top Insurers ({reportComputed[reportComputed.length-1]?.label}):</strong><br/>
-                      {Object.entries(reportComputed[reportComputed.length-1]?.byInsurer || {}).sort((a,b) => b[1]-a[1]).slice(0,5).map(([name,count],i) => (
-                        <div key={name}>{i+1}. {name}: <strong style={{ color: C.text }}>{fmt(count)}</strong></div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button onClick={() => setShowReport(false)} style={{ ...abtn(C.muted), padding: "10px 20px" }}>Cancel</button>
-                  <button onClick={sendReport} disabled={reportSending || reportChans.size === 0 || reportPeriods.length === 0} style={{
-                    background: "#A78BFA", color: C.bg, border: "none", borderRadius: 8, padding: "10px 24px",
-                    fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: (reportSending || reportChans.size === 0 || reportPeriods.length === 0) ? .5 : 1,
-                  }}>{reportSending ? "Sending..." : `📨 Send to ${reportChans.size} channel${reportChans.size > 1 ? "s" : ""}`}</button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
