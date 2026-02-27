@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import Link from "next/link";
+import Sidebar from "../components/Sidebar";
 
 /* ─── colour tokens (matched from main dashboard) ─────────── */
 const C = {
@@ -52,6 +52,48 @@ function isExpensive(key, f) {
   return !(f.hmo_id && f.hmo_id !== "" && f.hmo_id !== "0") && !(f.date_from && f.date_to);
 }
 
+/* ─── Schema for Custom Builder ────────────────────────────── */
+const TABLES = {
+  claims: { alias: "c", label: "Claims (5.3M)", cols: ["id","hmo_id","provider_id","enrollee_id","encounter_date","total_amount","approved_amount","auto_vet_amount","hmo_status","provider_status","hmo_erp_id","approval_code","entry_point","hmo_pile_id","has_unmatched_tariff","vetted_at","submitted_at","created_at","updated_at","paid_at"] },
+  claim_items: { alias: "ci", label: "Claim Items (24.7M)", cols: ["id","claim_id","care_id","tariff_id","description","qty","amount","unit_price_billed","unit_price_approved","approved_amount","approved_qty","hmo_approved","comment_id","provider_comment"] },
+  providers: { alias: "p", label: "Providers (9.8K)", cols: ["id","name","email","phone","address","state","nhis_code","category_id"] },
+  enrollees: { alias: "e", label: "Enrollees (2M)", cols: ["id","hmo_id","insurance_no","firstname","lastname","middle_name","sex","birthdate","status","hmo_plan_id","hmo_client_id","state","lga"] },
+  hmos: { alias: "h", label: "HMOs (167)", cols: ["id","name","code","email","currency","country_id","is_active"] },
+  provider_tariffs: { alias: "pt", label: "Provider Tariffs (18.9M)", cols: ["id","hmo_id","provider_id","care_id","care_variation_id","desc","amount","amount_max","flagged_as_correct_at","is_approved","created_at","updated_at"] },
+  cares: { alias: "ca", label: "Cares (398K)", cols: ["id","name","base_name","type","type_id","active","cve_version","gender_limit","age_min","age_max"] },
+  care_variations: { alias: "cv", label: "Care Variations (30K)", cols: ["id","care_id","age_min","age_max","meta"] },
+  claim_item_comments: { alias: "cic", label: "Comments", cols: ["id","name","hmo_id"] },
+};
+
+const JOINS = {
+  claims: {
+    providers: { on: "`c`.`provider_id` = `p`.`id`", label: "Provider details" },
+    enrollees: { on: "`c`.`enrollee_id` = `e`.`id`", label: "Enrollee details" },
+    hmos: { on: "`c`.`hmo_id` = `h`.`id`", label: "HMO name" },
+    claim_items: { on: "`c`.`id` = `ci`.`claim_id`", label: "Line items" },
+  },
+  claim_items: {
+    claims: { on: "`ci`.`claim_id` = `c`.`id`", label: "Parent claim" },
+    cares: { on: "`ci`.`care_id` = `ca`.`id`", label: "Care catalog" },
+    provider_tariffs: { on: "`ci`.`tariff_id` = `pt`.`id`", label: "Tariff pricing" },
+    claim_item_comments: { on: "`ci`.`comment_id` = `cic`.`id`", label: "Item comments" },
+  },
+  provider_tariffs: {
+    hmos: { on: "`pt`.`hmo_id` = `h`.`id`", label: "HMO name" },
+    providers: { on: "`pt`.`provider_id` = `p`.`id`", label: "Provider name" },
+    cares: { on: "`pt`.`care_id` = `ca`.`id`", label: "Care catalog" },
+    care_variations: { on: "`pt`.`care_variation_id` = `cv`.`id`", label: "Variation details" },
+  },
+  enrollees: {
+    hmos: { on: "`e`.`hmo_id` = `h`.`id`", label: "HMO name" },
+  },
+  cares: {
+    care_variations: { on: "`cv`.`care_id` = `ca`.`id`", label: "Variations" },
+  },
+};
+
+const OPS = ["=","!=",">",">=","<","<=","LIKE","IS NULL","IS NOT NULL","IN"];
+
 /* ─── Schema Context for AI ────────────────────────────────── */
 const SCHEMA_CONTEXT = `You are a MySQL query generator for Curacel's health insurance platform. Generate ONLY the SQL query, no explanation.
 
@@ -71,6 +113,7 @@ RULES: Use backticks, LEFT JOINs by default, LIMIT 1000 unless aggregation, >= s
 /* ─── Playbook Templates ───────────────────────────────────── */
 const CATS = {
   ai_assistant: { name: "AI Assistant", icon: "🤖", desc: "Describe what you need in plain English", templates: {} },
+  custom_builder: { name: "Custom Builder", icon: "🔨", desc: "Build queries visually — pick tables, columns, joins", templates: {} },
   claims_reports: { name: "Claims Reports", icon: "📋", desc: "Claims with provider, enrollee, and item details", templates: {
     full_claims_extract: { name: "Full Claims Extract", desc: "Detailed claims with items, enrollees, and provider info", heavy: true,
       filters: ["hmo_id","date_range","date_field","hmo_status","provider_status","provider_name","vetted_only","has_unmatched_tariff"],
@@ -134,8 +177,8 @@ const CATS = {
       }
     },
   }},
-  claims_erp: { name: "Claims ERP/ID", icon: "🔗", desc: "ERP ID validation, range checks, and lookups", templates: {
-    erp_range: { name: "ERP ID Range", desc: "Find first and last ERP IDs in a date range", heavy: false,
+  claims_erp: { name: "Claims ERP/ID", icon: "🔗", desc: "ERP ID validation and lookups", templates: {
+    erp_range: { name: "ERP ID Range", desc: "First and last ERP IDs in a date range", heavy: false,
       filters: ["hmo_id","date_range","erp_prefix"],
       build: (f) => {
         const px=esc(f.erp_prefix||"UG"); let w=[];
@@ -143,7 +186,7 @@ const CATS = {
         if(f.date_from) w.push(`  \`encounter_date\` >= '${esc(f.date_from)}'`);
         if(f.date_to) w.push(`  \`encounter_date\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
         w.push(`  \`hmo_erp_id\` LIKE '${px}%'`);
-        return `-- Aggregate: no LIMIT needed\nSELECT\n  CONCAT('${px}', MIN(CAST(SUBSTRING(\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED))) AS \`first_erp_id\`,\n  CONCAT('${px}', MAX(CAST(SUBSTRING(\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED))) AS \`last_erp_id\`\nFROM \`claims\`\nWHERE\n${w.join("\n  AND ")};`;
+        return `SELECT\n  CONCAT('${px}', MIN(CAST(SUBSTRING(\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED))) AS \`first_erp_id\`,\n  CONCAT('${px}', MAX(CAST(SUBSTRING(\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED))) AS \`last_erp_id\`\nFROM \`claims\`\nWHERE\n${w.join("\n  AND ")};`;
       }
     },
     erp_detail_list: { name: "ERP Detail List", desc: "Claims with ERP IDs sorted chronologically", heavy: true,
@@ -154,31 +197,31 @@ const CATS = {
         if(f.date_from) w.push(`  \`c\`.\`encounter_date\` >= '${esc(f.date_from)}'`);
         if(f.date_to) w.push(`  \`c\`.\`encounter_date\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
         w.push(`  \`c\`.\`hmo_erp_id\` LIKE '${px}%'`);
-        return `SELECT\n  \`c\`.\`hmo_erp_id\`,\n  \`c\`.\`encounter_date\`,\n  CONCAT(\`e\`.\`firstname\`, ' ', \`e\`.\`lastname\`) AS \`enrollee_name\`,\n  \`e\`.\`insurance_no\` AS \`enrollee_id\`,\n  \`p\`.\`name\` AS \`provider_name\`,\n  \`c\`.\`total_amount\` AS \`amount\`\nFROM \`claims\` \`c\`\nJOIN \`enrollees\` \`e\` ON \`e\`.\`id\` = \`c\`.\`enrollee_id\`\nJOIN \`providers\` \`p\` ON \`p\`.\`id\` = \`c\`.\`provider_id\`\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`c\`.\`encounter_date\` ASC, CAST(SUBSTRING(\`c\`.\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED) ASC${lim?`\nLIMIT ${lim}`:""};`;
+        return `SELECT\n  \`c\`.\`hmo_erp_id\`,\n  \`c\`.\`encounter_date\`,\n  CONCAT(\`e\`.\`firstname\`, ' ', \`e\`.\`lastname\`) AS \`enrollee_name\`,\n  \`e\`.\`insurance_no\`,\n  \`p\`.\`name\` AS \`provider_name\`,\n  \`c\`.\`total_amount\`\nFROM \`claims\` \`c\`\nJOIN \`enrollees\` \`e\` ON \`e\`.\`id\` = \`c\`.\`enrollee_id\`\nJOIN \`providers\` \`p\` ON \`p\`.\`id\` = \`c\`.\`provider_id\`\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`c\`.\`encounter_date\` ASC, CAST(SUBSTRING(\`c\`.\`hmo_erp_id\`, ${px.length+1}) AS UNSIGNED) ASC${lim?`\nLIMIT ${lim}`:""};`;
       }
     },
   }},
-  tariff_counts: { name: "Tariff Analysis", icon: "💰", desc: "Tariff counts, grouping, and mapping analysis", templates: {
+  tariff_counts: { name: "Tariff Analysis", icon: "💰", desc: "Tariff counts and mapping analysis", templates: {
     unflagged_by_hmo: { name: "Unflagged Mapped by HMO", desc: "Count unflagged, mapped tariffs per HMO", heavy: false,
       filters: ["care_type_medication"],
       build: (f) => {
         let extra="";
         if(f.care_type_medication) extra=`\n  AND \`c\`.\`type_id\` = 1\n  AND \`pt\`.\`care_variation_id\` IS NULL`;
-        return `-- Aggregate: no LIMIT needed\nSELECT\n  \`h\`.\`name\` AS \`hmo_name\`,\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_unflagged_mapped\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`${f.care_type_medication?"\nJOIN `cares` `c` ON `pt`.`care_id` = `c`.`id`":""}\nWHERE \`pt\`.\`care_id\` IS NOT NULL\n  AND \`pt\`.\`flagged_as_correct_at\` IS NULL${extra}\nGROUP BY \`h\`.\`id\`, \`h\`.\`name\`\nORDER BY \`total_unflagged_mapped\` DESC;`;
+        return `SELECT\n  \`h\`.\`name\` AS \`hmo_name\`,\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_unflagged_mapped\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`${f.care_type_medication?"\nJOIN `cares` `c` ON `pt`.`care_id` = `c`.`id`":""}\nWHERE \`pt\`.\`care_id\` IS NOT NULL\n  AND \`pt\`.\`flagged_as_correct_at\` IS NULL${extra}\nGROUP BY \`h\`.\`id\`, \`h\`.\`name\`\nORDER BY \`total_unflagged_mapped\` DESC;`;
       }
     },
     unmapped_by_hmo: { name: "Unmapped by HMO", desc: "Count unmapped, unflagged tariffs per HMO", heavy: false, filters: [],
-      build: () => `-- Aggregate: no LIMIT needed\nSELECT\n  \`h\`.\`name\` AS \`hmo_name\`,\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_unmapped_unflagged\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nWHERE \`pt\`.\`care_id\` IS NULL\n  AND \`pt\`.\`flagged_as_correct_at\` IS NULL\nGROUP BY \`h\`.\`id\`, \`h\`.\`name\`\nORDER BY \`total_unmapped_unflagged\` DESC;`
+      build: () => `SELECT\n  \`h\`.\`name\` AS \`hmo_name\`,\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_unmapped_unflagged\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nWHERE \`pt\`.\`care_id\` IS NULL\n  AND \`pt\`.\`flagged_as_correct_at\` IS NULL\nGROUP BY \`h\`.\`id\`, \`h\`.\`name\`\nORDER BY \`total_unmapped_unflagged\` DESC;`
     },
     new_tariffs_today: { name: "New Tariffs Today", desc: "Count of new tariffs created today", heavy: false, filters: ["hmo_id"],
       build: (f) => {
         let w=[`  \`pt\`.\`created_at\` >= CURDATE()`,`  \`pt\`.\`created_at\` < DATE_ADD(CURDATE(), INTERVAL 1 DAY)`];
         if(isNum(f.hmo_id)&&f.hmo_id!=="0") w.push(`  \`pt\`.\`hmo_id\` = ${Number(f.hmo_id)}`);
-        return `-- Aggregate: no LIMIT needed\nSELECT\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_new_provider_tariffs_today\`\nFROM \`provider_tariffs\` \`pt\`\nWHERE\n${w.join("\n  AND ")};`;
+        return `SELECT\n  COUNT(DISTINCT \`pt\`.\`id\`) AS \`total_new_provider_tariffs_today\`\nFROM \`provider_tariffs\` \`pt\`\nWHERE\n${w.join("\n  AND ")};`;
       }
     },
   }},
-  tariff_exports: { name: "Tariff Exports", icon: "📦", desc: "Detailed tariff data with care/variation info", templates: {
+  tariff_exports: { name: "Tariff Exports", icon: "📦", desc: "Detailed tariff data with care info", templates: {
     tariff_full_export: { name: "Full Tariff Export", desc: "Tariffs with HMO, provider, care details", heavy: true,
       filters: ["hmo_id","date_range","date_field","flagged_status","care_type_medication","variation_filter"],
       build: (f, lim) => {
@@ -193,10 +236,10 @@ const CATS = {
         const df=f.date_field||"created_at";
         if(f.date_from) w.push(`  \`pt\`.\`${esc(df)}\` >= '${esc(f.date_from)}'`);
         if(f.date_to) w.push(`  \`pt\`.\`${esc(df)}\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
-        return `SELECT\n  \`pt\`.\`id\` AS \`care_description_id\`,\n  \`pt\`.\`care_id\`,\n  \`h\`.\`name\` AS \`hmo_name\`,\n  \`p\`.\`name\` AS \`provider_name\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  \`pt\`.\`desc\` AS \`care_description\`,\n  \`pt\`.\`amount\`,\n  \`pt\`.\`created_at\`,\n  \`pt\`.\`updated_at\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`cares\` \`c\` ON \`pt\`.\`care_id\` = \`c\`.\`id\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nLEFT JOIN \`providers\` \`p\` ON \`pt\`.\`provider_id\` = \`p\`.\`id\`\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`pt\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
+        return `SELECT\n  \`pt\`.\`id\`,\n  \`pt\`.\`care_id\`,\n  \`h\`.\`name\` AS \`hmo_name\`,\n  \`p\`.\`name\` AS \`provider_name\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  \`pt\`.\`desc\`,\n  \`pt\`.\`amount\`,\n  \`pt\`.\`created_at\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`cares\` \`c\` ON \`pt\`.\`care_id\` = \`c\`.\`id\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nLEFT JOIN \`providers\` \`p\` ON \`pt\`.\`provider_id\` = \`p\`.\`id\`\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`pt\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
       }
     },
-    tariff_with_variations: { name: "Tariffs + Variations", desc: "Medication tariffs with strength and drug form from JSON", heavy: true,
+    tariff_with_variations: { name: "Tariffs + Variations", desc: "Medication tariffs with strength and drug form", heavy: true,
       filters: ["hmo_id","date_range","flagged_status"],
       build: (f, lim) => {
         let w=["  `c`.`type_id` = 1"];
@@ -204,40 +247,35 @@ const CATS = {
         if(f.flagged_status==="unflagged") w.push("  `pt`.`flagged_as_correct_at` IS NULL");
         if(f.date_from) w.push(`  \`pt\`.\`created_at\` >= '${esc(f.date_from)}'`);
         if(f.date_to) w.push(`  \`pt\`.\`created_at\` < DATE_ADD('${esc(f.date_to)}', INTERVAL 1 DAY)`);
-        return `SELECT\n  \`pt\`.\`id\` AS \`provider_tariff_id\`,\n  \`pt\`.\`care_id\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  \`h\`.\`name\` AS \`hmo_name\`,\n  JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.strength')) AS \`strength\`,\n  \`df\`.\`name\` AS \`drug_form\`,\n  \`pt\`.\`amount\`,\n  \`pt\`.\`desc\` AS \`tariff_description\`,\n  \`pt\`.\`care_variation_id\`,\n  \`pt\`.\`created_at\`,\n  \`pt\`.\`updated_at\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`cares\` \`c\` ON \`pt\`.\`care_id\` = \`c\`.\`id\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nLEFT JOIN \`care_variations\` \`cv\` ON \`pt\`.\`care_variation_id\` = \`cv\`.\`id\`\nLEFT JOIN \`drug_forms\` \`df\` ON \`df\`.\`id\` = CAST(JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.drug_form_id')) AS UNSIGNED)\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`pt\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
+        return `SELECT\n  \`pt\`.\`id\`,\n  \`pt\`.\`care_id\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  \`h\`.\`name\` AS \`hmo_name\`,\n  JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.strength')) AS \`strength\`,\n  \`df\`.\`name\` AS \`drug_form\`,\n  \`pt\`.\`amount\`,\n  \`pt\`.\`desc\`,\n  \`pt\`.\`care_variation_id\`,\n  \`pt\`.\`created_at\`\nFROM \`provider_tariffs\` \`pt\`\nJOIN \`cares\` \`c\` ON \`pt\`.\`care_id\` = \`c\`.\`id\`\nJOIN \`hmos\` \`h\` ON \`pt\`.\`hmo_id\` = \`h\`.\`id\`\nLEFT JOIN \`care_variations\` \`cv\` ON \`pt\`.\`care_variation_id\` = \`cv\`.\`id\`\nLEFT JOIN \`drug_forms\` \`df\` ON \`df\`.\`id\` = CAST(JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.drug_form_id')) AS UNSIGNED)\nWHERE\n${w.join("\n  AND ")}\nORDER BY \`pt\`.\`created_at\` DESC${lim?`\nLIMIT ${lim}`:""};`;
       }
     },
   }},
   cares_analysis: { name: "Cares / CVE", icon: "🧬", desc: "Care catalog analysis, V1/V2 migration", templates: {
-    v1_cares: { name: "Non-V2 Cares (V1/NULL)", desc: "All cares not yet on CVE version 2", heavy: false, filters: [],
-      build: (f, lim) => `SELECT\n  \`c\`.\`id\`,\n  \`c\`.\`name\`,\n  \`c\`.\`type\`,\n  \`c\`.\`active\`,\n  \`c\`.\`type_id\`,\n  \`c\`.\`cve_version\`\nFROM \`cares\` \`c\`\nWHERE \`c\`.\`cve_version\` IS NULL\n   OR \`c\`.\`cve_version\` <> 2\nORDER BY \`c\`.\`name\`${lim?`\nLIMIT ${lim}`:""};`
-    },
-    v2_cares: { name: "V2 Cares (Active)", desc: "All active cares on CVE version 2", heavy: false, filters: [],
-      build: (f, lim) => `SELECT\n  \`c\`.\`id\`,\n  \`c\`.\`name\`,\n  \`c\`.\`type\`,\n  \`c\`.\`active\`,\n  \`c\`.\`type_id\`,\n  \`c\`.\`cve_version\`\nFROM \`cares\` \`c\`\nWHERE \`c\`.\`cve_version\` = 2\n  AND \`c\`.\`active\` = 1\nORDER BY \`c\`.\`name\`${lim?`\nLIMIT ${lim}`:""};`
+    v1_cares: { name: "Non-V2 Cares", desc: "All cares not yet on CVE version 2", heavy: false, filters: [],
+      build: (f, lim) => `SELECT \`id\`, \`name\`, \`type\`, \`active\`, \`type_id\`, \`cve_version\`\nFROM \`cares\`\nWHERE \`cve_version\` IS NULL OR \`cve_version\` <> 2\nORDER BY \`name\`${lim?`\nLIMIT ${lim}`:""};`
     },
     cve_version_summary: { name: "CVE Version Summary", desc: "Count of cares grouped by CVE version", heavy: false, filters: [],
-      build: () => `-- Aggregate: no LIMIT needed\nSELECT\n  \`c\`.\`cve_version\`,\n  COUNT(*) AS \`total_cares\`\nFROM \`cares\` \`c\`\nGROUP BY \`c\`.\`cve_version\`\nORDER BY \`c\`.\`cve_version\`;`
-    },
-    v1_with_variations: { name: "V1 Cares + Variations", desc: "Non-V2 cares with strength/drug form details", heavy: true, filters: [],
-      build: (f, lim) => `SELECT\n  \`c\`.\`id\` AS \`care_id\`,\n  \`c\`.\`name\` AS \`care_name\`,\n  COALESCE(NULLIF(\`c\`.\`base_name\`, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(\`c\`.\`meta\`, '$.Text')), '')) AS \`care_description\`,\n  \`c\`.\`type_id\`,\n  CASE WHEN COUNT(\`cv\`.\`id\`) > 0 THEN 'YES' ELSE 'NO' END AS \`has_variation\`,\n  GROUP_CONCAT(\n    DISTINCT CONCAT(\n      COALESCE(JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.strength')), ''),\n      CASE WHEN \`df\`.\`name\` IS NOT NULL AND \`df\`.\`name\` <> '' THEN CONCAT(' ', \`df\`.\`name\`) ELSE '' END\n    )\n    ORDER BY \`cv\`.\`id\`\n    SEPARATOR ' | '\n  ) AS \`variation_stats\`\nFROM \`cares\` \`c\`\nLEFT JOIN \`care_variations\` \`cv\` ON \`cv\`.\`care_id\` = \`c\`.\`id\`\nLEFT JOIN \`drug_forms\` \`df\` ON \`df\`.\`id\` = CAST(JSON_UNQUOTE(JSON_EXTRACT(\`cv\`.\`meta\`, '$.drug_form_id')) AS UNSIGNED)\nWHERE \`c\`.\`cve_version\` IS NULL\n   OR \`c\`.\`cve_version\` <> 2\nGROUP BY \`c\`.\`id\`, \`c\`.\`name\`, \`c\`.\`base_name\`, \`c\`.\`type_id\`, \`c\`.\`meta\`\nORDER BY \`c\`.\`id\`${lim?`\nLIMIT ${lim}`:""};`
+      build: () => `SELECT \`cve_version\`, COUNT(*) AS \`total_cares\`\nFROM \`cares\`\nGROUP BY \`cve_version\`\nORDER BY \`cve_version\`;`
     },
   }},
-  reference: { name: "Reference", icon: "🔍", desc: "Status lookups, distinct values, system checks", templates: {
-    distinct_hmo_status: { name: "Distinct HMO Statuses", desc: "All unique hmo_status values in claims", heavy: false, filters: [],
-      build: () => `SELECT DISTINCT \`hmo_status\`\nFROM \`claims\`\nORDER BY \`hmo_status\`;`
+  reference: { name: "Reference", icon: "🔍", desc: "Status lookups and system checks", templates: {
+    distinct_hmo_status: { name: "Distinct HMO Statuses", desc: "All unique hmo_status values", heavy: false, filters: [],
+      build: () => `SELECT DISTINCT \`hmo_status\` FROM \`claims\` ORDER BY \`hmo_status\`;`
     },
     distinct_provider_status: { name: "Provider Status Breakdown", desc: "Provider status values with counts", heavy: false, filters: [],
-      build: () => `-- Aggregate: no LIMIT needed\nSELECT\n  \`provider_status\`,\n  COUNT(*) AS \`total\`\nFROM \`claims\`\nGROUP BY \`provider_status\`\nORDER BY \`provider_status\`;`
+      build: () => `SELECT \`provider_status\`, COUNT(*) AS \`total\`\nFROM \`claims\`\nGROUP BY \`provider_status\`\nORDER BY \`provider_status\`;`
     },
-    distinct_enrollee_status: { name: "Distinct Enrollee Statuses", desc: "All unique status values in enrollees", heavy: false, filters: [],
-      build: () => `SELECT DISTINCT \`status\`\nFROM \`enrollees\`\nORDER BY \`status\`;`
+    item_status_breakdown: { name: "Claim Item Status", desc: "All item_status values with counts", heavy: false, filters: [],
+      build: () => `SELECT \`item_status\`, COUNT(*) AS \`total\`\nFROM \`claim_items\`\nGROUP BY \`item_status\`\nORDER BY \`item_status\`;`
     },
   }},
 };
 
-/* ─── Shared inline styles ─────────────────────────────────── */
+/* ─── Shared styles ────────────────────────────────────────── */
 const inputS = { padding:"9px 12px", border:`1.5px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"DM Sans,sans-serif", color:C.text, background:C.elevated, outline:"none", width:"100%" };
 const selectS = { ...inputS, cursor:"pointer" };
+const btnSmall = { padding:"5px 10px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, fontWeight:600, cursor:"pointer", background:C.elevated, color:C.sub, fontFamily:"DM Sans,sans-serif" };
 
 /* ─── Components ───────────────────────────────────────────── */
 function Badge({ children, color = C.accent, bg }) {
@@ -282,7 +320,7 @@ function FilterPanel({ filters: fl, values: v, onChange }) {
         </select>
       </div>}
       {fl.includes("provider_name") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
-        {L("Provider Name (partial)")}<input type="text" placeholder="e.g., General Hospital..." value={v.provider_name||""} onChange={e=>onChange("provider_name",e.target.value)} style={inputS}/>
+        {L("Provider Name")}<input type="text" placeholder="e.g., General Hospital..." value={v.provider_name||""} onChange={e=>onChange("provider_name",e.target.value)} style={inputS}/>
       </div>}
       {fl.includes("erp_prefix") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
         {L("ERP Prefix")}<input type="text" maxLength={4} placeholder="UG" value={v.erp_prefix||""} onChange={e=>onChange("erp_prefix",e.target.value.replace(/[^A-Za-z]/g,"").toUpperCase())} style={inputS}/>
@@ -290,13 +328,13 @@ function FilterPanel({ filters: fl, values: v, onChange }) {
       {fl.includes("flagged_status") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
         {L("Flagged Status")}
         <select value={v.flagged_status||""} onChange={e=>onChange("flagged_status",e.target.value)} style={selectS}>
-          <option value="">All</option><option value="unflagged">Unflagged</option><option value="flagged">Flagged as Correct</option>
+          <option value="">All</option><option value="unflagged">Unflagged</option><option value="flagged">Flagged</option>
         </select>
       </div>}
       {fl.includes("variation_filter") && <div style={{display:"flex",flexDirection:"column",gap:5}}>
         {L("Variation")}
         <select value={v.variation_filter||""} onChange={e=>onChange("variation_filter",e.target.value)} style={selectS}>
-          <option value="">All</option><option value="with">With Variation</option><option value="without">Without Variation</option>
+          <option value="">All</option><option value="with">With Variation</option><option value="without">Without</option>
         </select>
       </div>}
       {fl.includes("vetted_only") && <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:C.text}}>
@@ -306,7 +344,7 @@ function FilterPanel({ filters: fl, values: v, onChange }) {
         <input type="checkbox" checked={v.has_unmatched_tariff||false} onChange={e=>onChange("has_unmatched_tariff",e.target.checked)} style={{accentColor:C.accent,width:16,height:16}}/>Has unmatched tariff
       </label>}
       {fl.includes("care_type_medication") && <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:C.text}}>
-        <input type="checkbox" checked={v.care_type_medication||false} onChange={e=>onChange("care_type_medication",e.target.checked)} style={{accentColor:C.accent,width:16,height:16}}/>Medications only (type_id = 1)
+        <input type="checkbox" checked={v.care_type_medication||false} onChange={e=>onChange("care_type_medication",e.target.checked)} style={{accentColor:C.accent,width:16,height:16}}/>Medications only
       </label>}
     </div>
   );
@@ -330,8 +368,8 @@ function AIAssistant({ onResult }) {
       const res = await fetch("/api/generate-sql", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({prompt:prompt.trim()}) });
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const data = await res.json();
-      if (data.sql) onResult(data.sql); else setError("No SQL generated. Try being more specific.");
-    } catch(e) { setError("Failed to generate. Check the console or try again."); console.error(e); }
+      if (data.sql) onResult(data.sql); else setError("No SQL generated.");
+    } catch(e) { setError("Failed to generate. Try again."); console.error(e); }
     setLoading(false);
   };
   return (
@@ -349,18 +387,229 @@ function AIAssistant({ onResult }) {
           <button onClick={go} disabled={loading||!prompt.trim()} style={{
             padding:"10px 22px", background:loading?C.muted:C.accent, color:C.bg, border:"none", borderRadius:6,
             fontSize:13, fontWeight:700, cursor:loading?"wait":"pointer", fontFamily:"DM Sans,sans-serif",
-            opacity:!prompt.trim()&&!loading?.5:1, transition:"all .2s",
+            opacity:!prompt.trim()&&!loading?.5:1,
           }}>{loading?"⏳ Generating...":"✨ Generate SQL"}</button>
           <span style={{fontSize:11,color:C.muted}}>⌘+Enter</span>
         </div>
-        {error && <div style={{marginTop:10,padding:"8px 12px",background:C.danger+"22",border:`1px solid ${C.danger}55`,borderRadius:6,fontSize:12,color:C.danger}}>{error}</div>}
+        {error && <div style={{marginTop:10,padding:"8px 12px",background:C.danger+"22",borderRadius:6,fontSize:12,color:C.danger}}>{error}</div>}
       </div>
       <div>
         <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em",marginBottom:8}}>💡 Examples</div>
         <div style={{display:"flex",flexDirection:"column",gap:6}}>
           {examples.map((ex,i)=><button key={i} onClick={()=>setPrompt(ex)} style={{
-            textAlign:"left",padding:"8px 12px",background:C.elevated,border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,color:C.sub,cursor:"pointer",lineHeight:1.4,transition:"all .15s",
+            textAlign:"left",padding:"8px 12px",background:C.elevated,border:`1px solid ${C.border}`,borderRadius:6,fontSize:12,color:C.sub,cursor:"pointer",lineHeight:1.4,
           }} onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.color=C.sub;}}>"{ex}"</button>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Custom Query Builder ─────────────────────────────────── */
+function CustomBuilder({ onSQL }) {
+  const [baseTable, setBaseTable] = useState("claims");
+  const [selectedCols, setSelectedCols] = useState(["id","hmo_id","total_amount","approved_amount","hmo_status","created_at"]);
+  const [joins, setJoins] = useState([]);
+  const [wheres, setWheres] = useState([]);
+  const [orderCol, setOrderCol] = useState("created_at");
+  const [orderDir, setOrderDir] = useState("DESC");
+  const [limitVal, setLimitVal] = useState("1000");
+
+  const bt = TABLES[baseTable];
+  const alias = bt.alias;
+
+  // Get available joins for current base table
+  const availableJoins = JOINS[baseTable] || {};
+
+  // All available columns (base + joined)
+  const allCols = useMemo(() => {
+    let cols = bt.cols.map(c => ({ table: baseTable, alias, col: c, display: `${alias}.${c}` }));
+    joins.forEach(j => {
+      const jt = TABLES[j.table];
+      if (jt) jt.cols.forEach(c => cols.push({ table: j.table, alias: jt.alias, col: c, display: `${jt.alias}.${c}` }));
+    });
+    return cols;
+  }, [baseTable, bt, alias, joins]);
+
+  const toggleCol = (col) => {
+    setSelectedCols(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]);
+  };
+
+  const addJoin = (table) => {
+    if (joins.find(j => j.table === table)) return;
+    const info = availableJoins[table];
+    setJoins(p => [...p, { table, type: "LEFT JOIN", on: info.on }]);
+  };
+
+  const removeJoin = (table) => {
+    setJoins(p => p.filter(j => j.table !== table));
+    // Remove columns from that table
+    const jAlias = TABLES[table]?.alias;
+    setSelectedCols(p => p.filter(c => !c.startsWith(jAlias + ".")));
+  };
+
+  const addWhere = () => {
+    setWheres(p => [...p, { col: `${alias}.id`, op: "=", val: "" }]);
+  };
+
+  const updateWhere = (i, field, val) => {
+    setWheres(p => p.map((w, idx) => idx === i ? { ...w, [field]: val } : w));
+  };
+
+  const removeWhere = (i) => { setWheres(p => p.filter((_, idx) => idx !== i)); };
+
+  // Build the SQL
+  const sql = useMemo(() => {
+    // SELECT
+    const selectCols = selectedCols.length > 0
+      ? selectedCols.map(c => c.includes(".") ? `  \`${c.split(".")[0]}\`.\`${c.split(".")[1]}\`` : `  \`${alias}\`.\`${c}\``).join(",\n")
+      : `  \`${alias}\`.*`;
+
+    // FROM
+    let from = `FROM \`${baseTable}\` \`${alias}\``;
+
+    // JOINS
+    const joinLines = joins.map(j => {
+      return `${j.type} \`${j.table}\` \`${TABLES[j.table].alias}\` ON ${j.on}`;
+    }).join("\n");
+
+    // WHERE
+    const whereLines = wheres.filter(w => w.val || w.op === "IS NULL" || w.op === "IS NOT NULL").map(w => {
+      if (w.op === "IS NULL") return `  ${w.col} IS NULL`;
+      if (w.op === "IS NOT NULL") return `  ${w.col} IS NOT NULL`;
+      if (w.op === "IN") return `  ${w.col} IN (${w.val})`;
+      if (w.op === "LIKE") return `  ${w.col} LIKE '${esc(w.val)}'`;
+      return `  ${w.col} ${w.op} '${esc(w.val)}'`;
+    });
+
+    let q = `SELECT\n${selectCols}\n${from}`;
+    if (joinLines) q += `\n${joinLines}`;
+    if (whereLines.length) q += `\nWHERE\n${whereLines.join("\n  AND ")}`;
+    if (orderCol) q += `\nORDER BY \`${alias}\`.\`${orderCol}\` ${orderDir}`;
+    if (limitVal && limitVal !== "0") q += `\nLIMIT ${limitVal}`;
+    q += ";";
+    return q;
+  }, [baseTable, alias, selectedCols, joins, wheres, orderCol, orderDir, limitVal]);
+
+  // Auto-update parent
+  useEffect(() => { onSQL(sql); }, [sql, onSQL]);
+
+  const L = (label) => <div style={{ fontSize:11, fontWeight:600, color:C.sub, textTransform:"uppercase", letterSpacing:".05em", marginBottom:6 }}>{label}</div>;
+
+  return (
+    <div style={{ padding:18, display:"flex", flexDirection:"column", gap:18, maxHeight:"calc(100vh - 200px)", overflowY:"auto" }}>
+      {/* Base Table */}
+      <div>
+        {L("📦 FROM — Base Table")}
+        <select value={baseTable} onChange={e => { setBaseTable(e.target.value); setSelectedCols(["id"]); setJoins([]); setWheres([]); setOrderCol("created_at"); }} style={selectS}>
+          {Object.entries(TABLES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+        </select>
+      </div>
+
+      {/* Joins */}
+      <div>
+        {L("🔗 JOIN — Add Tables")}
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+          {Object.entries(availableJoins).map(([table, info]) => {
+            const joined = joins.find(j => j.table === table);
+            return (
+              <button key={table} onClick={() => joined ? removeJoin(table) : addJoin(table)} style={{
+                padding:"6px 12px", borderRadius:6, fontSize:12, fontWeight:600, cursor:"pointer",
+                background: joined ? C.accent+"22" : C.elevated, color: joined ? C.accent : C.sub,
+                border: `1.5px solid ${joined ? C.accent : C.border}`, fontFamily:"DM Sans,sans-serif",
+              }}>
+                {joined ? "✓ " : "+ "}{TABLES[table]?.alias}.{table}
+                <span style={{ fontSize:10, color:C.muted, marginLeft:4 }}>({info.label})</span>
+              </button>
+            );
+          })}
+        </div>
+        {Object.keys(availableJoins).length === 0 && <div style={{fontSize:12,color:C.muted,fontStyle:"italic"}}>No predefined joins for this table</div>}
+      </div>
+
+      {/* Columns */}
+      <div>
+        {L(`📝 SELECT — Columns from ${alias}.${baseTable}`)}
+        <div style={{ display:"flex", flexWrap:"wrap", gap:4, marginBottom:8 }}>
+          <button onClick={() => setSelectedCols(bt.cols.map(c => c))} style={{...btnSmall, color:C.accent, borderColor:C.accent}}>All</button>
+          <button onClick={() => setSelectedCols(["id"])} style={btnSmall}>Reset</button>
+        </div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:4, maxHeight:120, overflowY:"auto", padding:4 }}>
+          {bt.cols.map(col => (
+            <label key={col} style={{ display:"flex", alignItems:"center", gap:4, padding:"3px 8px", borderRadius:4, fontSize:11, cursor:"pointer",
+              background: selectedCols.includes(col) ? C.accent+"18" : C.elevated,
+              border: `1px solid ${selectedCols.includes(col) ? C.accent+"60" : C.border}`,
+              color: selectedCols.includes(col) ? C.accent : C.sub, fontFamily:"JetBrains Mono,monospace",
+            }}>
+              <input type="checkbox" checked={selectedCols.includes(col)} onChange={() => toggleCol(col)} style={{width:12,height:12,accentColor:C.accent}} />
+              {col}
+            </label>
+          ))}
+        </div>
+        {/* Joined table columns */}
+        {joins.map(j => {
+          const jt = TABLES[j.table]; if (!jt) return null;
+          return (
+            <div key={j.table} style={{ marginTop:10 }}>
+              <div style={{fontSize:11,fontWeight:600,color:C.blue,marginBottom:4}}>+ {jt.alias}.{j.table} columns</div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:4, maxHeight:80, overflowY:"auto", padding:4 }}>
+                {jt.cols.map(col => {
+                  const full = `${jt.alias}.${col}`;
+                  return (
+                    <label key={full} style={{ display:"flex", alignItems:"center", gap:4, padding:"3px 8px", borderRadius:4, fontSize:11, cursor:"pointer",
+                      background: selectedCols.includes(full) ? C.blue+"18" : C.elevated,
+                      border: `1px solid ${selectedCols.includes(full) ? C.blue+"60" : C.border}`,
+                      color: selectedCols.includes(full) ? C.blue : C.sub, fontFamily:"JetBrains Mono,monospace",
+                    }}>
+                      <input type="checkbox" checked={selectedCols.includes(full)} onChange={() => toggleCol(full)} style={{width:12,height:12,accentColor:C.blue}} />
+                      {col}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* WHERE */}
+      <div>
+        {L("🎯 WHERE — Conditions")}
+        {wheres.map((w, i) => (
+          <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr auto 1fr auto", gap:6, marginBottom:6, alignItems:"center" }}>
+            <select value={w.col} onChange={e => updateWhere(i, "col", e.target.value)} style={{...selectS,fontSize:11,padding:"6px 8px",fontFamily:"JetBrains Mono,monospace"}}>
+              {allCols.map(c => <option key={c.display} value={c.display}>{c.display}</option>)}
+            </select>
+            <select value={w.op} onChange={e => updateWhere(i, "op", e.target.value)} style={{...selectS,fontSize:11,padding:"6px 8px",width:"auto"}}>
+              {OPS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+            {(w.op !== "IS NULL" && w.op !== "IS NOT NULL") ? (
+              <input value={w.val} onChange={e => updateWhere(i, "val", e.target.value)} placeholder="value..." style={{...inputS,fontSize:11,padding:"6px 8px"}} />
+            ) : <div />}
+            <button onClick={() => removeWhere(i)} style={{...btnSmall, color:C.danger, borderColor:C.danger, padding:"4px 8px"}}>✕</button>
+          </div>
+        ))}
+        <button onClick={addWhere} style={{...btnSmall, color:C.accent, borderColor:C.accent, marginTop:4}}>+ Add condition</button>
+      </div>
+
+      {/* ORDER BY + LIMIT */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr auto auto", gap:8, alignItems:"end" }}>
+        <div>
+          {L("↕ ORDER BY")}
+          <select value={orderCol} onChange={e => setOrderCol(e.target.value)} style={{...selectS,fontSize:12}}>
+            <option value="">None</option>
+            {bt.cols.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          {L("Direction")}
+          <select value={orderDir} onChange={e => setOrderDir(e.target.value)} style={{...selectS,fontSize:12,width:100}}>
+            <option value="DESC">DESC ↓</option><option value="ASC">ASC ↑</option>
+          </select>
+        </div>
+        <div>
+          {L("LIMIT")}
+          <input type="number" value={limitVal} onChange={e => setLimitVal(e.target.value)} style={{...inputS,fontSize:12,width:90}} />
         </div>
       </div>
     </div>
@@ -404,138 +653,140 @@ export default function QueryBuilderPage() {
   const [activeTpl, setActiveTpl] = useState(null);
   const [filters, setFilters] = useState({});
   const [aiSQL, setAiSQL] = useState("");
+  const [customSQL, setCustomSQL] = useState("");
   const [limitOn, setLimitOn] = useState(true);
 
   const cat = CATS[activeCat];
   const tpl = activeTpl ? cat?.templates?.[activeTpl] : null;
   const isAI = activeCat === "ai_assistant";
+  const isCustom = activeCat === "custom_builder";
 
-  useEffect(() => { setActiveTpl(null); setFilters({}); setAiSQL("");
-    if (activeCat !== "ai_assistant") { const t=CATS[activeCat]?.templates; if(t){const f=Object.keys(t)[0]; if(f)setActiveTpl(f);} }
-  }, [activeCat]);
+  useEffect(() => { setActiveTpl(null); setFilters({}); setAiSQL(""); setCustomSQL("");
+    if (!isAI && !isCustom) { const t=CATS[activeCat]?.templates; if(t){const f=Object.keys(t)[0]; if(f)setActiveTpl(f);} }
+  }, [activeCat, isAI, isCustom]);
   useEffect(() => { setFilters({}); setLimitOn(true); }, [activeTpl]);
 
   const isH = activeTpl && HEAVY.has(activeTpl);
-  const showToggle = !isAI && isH;
+  const showToggle = !isAI && !isCustom && isH;
   const effLimit = showToggle && limitOn ? LIMIT : null;
 
   const sql = useMemo(() => {
-    if (isAI) return aiSQL || "-- Use the AI assistant to generate a query";
+    if (isAI) return aiSQL || "-- Use the AI assistant above to generate a query";
+    if (isCustom) return customSQL || "-- Pick a table and columns to build your query";
     if (tpl?.build) return tpl.build(filters, effLimit);
     return "-- Select a query template";
-  }, [isAI, aiSQL, tpl, filters, effLimit]);
+  }, [isAI, isCustom, aiSQL, customSQL, tpl, filters, effLimit]);
 
   const warning = useMemo(() => {
-    if (isAI || !activeTpl) return null;
-    if (isExpensive(activeTpl, filters)) return "⚠️ No HMO or date filter — may return millions of rows. Add a filter.";
+    if (isAI || isCustom || !activeTpl) return null;
+    if (isExpensive(activeTpl, filters)) return "⚠️ No HMO or date filter — may return millions of rows.";
     if (isH && !limitOn) return "⚠️ LIMIT is off — large result set possible.";
     return null;
-  }, [isAI, activeTpl, filters, limitOn, isH]);
+  }, [isAI, isCustom, activeTpl, filters, limitOn, isH]);
 
   return (
-    <div style={{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"DM Sans,sans-serif" }}>
-      {/* ── Nav Header ── */}
-      <div style={{ padding:"14px 24px", background:C.card, borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:16 }}>
-          <Link href="/" style={{ color:C.sub, textDecoration:"none", fontSize:13, display:"flex", alignItems:"center", gap:6, transition:"color .2s" }}
-            onMouseEnter={e=>e.currentTarget.style.color=C.accent} onMouseLeave={e=>e.currentTarget.style.color=C.sub}>
-            ← Claims Dashboard
-          </Link>
-          <div style={{ width:1, height:20, background:C.border }}/>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+    <div style={{ display:"flex", minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"DM Sans,sans-serif" }}>
+      <Sidebar />
+
+      {/* Main content - offset by sidebar width */}
+      <div style={{ marginLeft: 240, flex: 1, minHeight:"100vh" }}>
+        {/* Header */}
+        <div style={{ padding:"14px 24px", background:C.card, borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <div style={{ width:32, height:32, borderRadius:8, background:C.accent, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>⚡</div>
             <span style={{ fontSize:16, fontWeight:700 }}>Query Builder</span>
-            <span style={{ fontSize:11, color:C.muted, fontWeight:500 }}>v3</span>
+            <span style={{ fontSize:11, color:C.muted }}>v3</span>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <Badge color={C.success}>Status Maps Confirmed</Badge>
+            <Badge color={C.blue}>MySQL</Badge>
           </div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
-          <Badge color={C.success}>Status Maps Confirmed</Badge>
-          <Badge color={C.blue}>MySQL</Badge>
-        </div>
-      </div>
 
-      {/* ── Content ── */}
-      <div style={{ maxWidth:1400, margin:"0 auto", padding:"20px 24px" }}>
-        {/* Category Tabs */}
-        <div style={{ display:"flex", gap:6, marginBottom:20, overflowX:"auto", paddingBottom:4 }}>
-          {Object.entries(CATS).map(([key, c]) => (
-            <button key={key} onClick={()=>setActiveCat(key)} style={{
-              padding:"10px 18px", borderRadius:10,
-              border:activeCat===key?`2px solid ${C.accent}`:`1.5px solid ${C.border}`,
-              background:activeCat===key?C.accent+"15":C.card,
-              cursor:"pointer", fontSize:13, fontWeight:600, fontFamily:"DM Sans,sans-serif",
-              color:activeCat===key?C.accent:C.sub, whiteSpace:"nowrap", transition:"all .2s",
-            }}>{c.icon} {c.name}</button>
-          ))}
-        </div>
+        {/* Content */}
+        <div style={{ maxWidth:1200, margin:"0 auto", padding:"20px 24px" }}>
+          {/* Category Tabs */}
+          <div style={{ display:"flex", gap:6, marginBottom:20, overflowX:"auto", paddingBottom:4 }}>
+            {Object.entries(CATS).map(([key, c]) => (
+              <button key={key} onClick={()=>setActiveCat(key)} style={{
+                padding:"10px 16px", borderRadius:10,
+                border:activeCat===key?`2px solid ${key==="custom_builder"?C.blue:C.accent}`:`1.5px solid ${C.border}`,
+                background:activeCat===key?(key==="custom_builder"?C.blue:C.accent)+"15":C.card,
+                cursor:"pointer", fontSize:13, fontWeight:600, fontFamily:"DM Sans,sans-serif",
+                color:activeCat===key?(key==="custom_builder"?C.blue:C.accent):C.sub, whiteSpace:"nowrap",
+              }}>{c.icon} {c.name}</button>
+            ))}
+          </div>
 
-        {/* Main Grid */}
-        <div style={{ display:"grid", gridTemplateColumns:"380px 1fr", gap:20, alignItems:"start" }}>
-          {/* Left Panel */}
-          <div style={{ background:C.card, borderRadius:12, border:`1.5px solid ${C.border}`, overflow:"hidden" }}>
-            <div style={{ padding:"12px 18px", background:C.elevated, borderBottom:`1.5px solid ${C.border}`, display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{fontSize:14}}>{isAI?"🤖":"🔧"}</span>
-              <span style={{fontSize:14,fontWeight:600}}>{isAI?"AI Assistant":"Filters"}</span>
-              {!isAI && <button onClick={()=>setFilters({})} style={{marginLeft:"auto",padding:"3px 10px",border:`1px solid ${C.border}`,borderRadius:4,fontSize:11,fontWeight:500,cursor:"pointer",background:C.elevated,color:C.muted}}>Reset</button>}
+          {/* Main Grid */}
+          <div style={{ display:"grid", gridTemplateColumns: isCustom ? "420px 1fr" : "380px 1fr", gap:20, alignItems:"start" }}>
+            {/* Left Panel */}
+            <div style={{ background:C.card, borderRadius:12, border:`1.5px solid ${C.border}`, overflow:"hidden" }}>
+              <div style={{ padding:"12px 18px", background:C.elevated, borderBottom:`1.5px solid ${C.border}`, display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{fontSize:14}}>{isAI?"🤖":isCustom?"🔨":"🔧"}</span>
+                <span style={{fontSize:14,fontWeight:600}}>{isAI?"AI Assistant":isCustom?"Custom Builder":"Filters"}</span>
+                {!isAI && !isCustom && <button onClick={()=>setFilters({})} style={{marginLeft:"auto",...btnSmall}}>Reset</button>}
+              </div>
+              {isAI ? <AIAssistant onResult={setAiSQL}/> :
+               isCustom ? <CustomBuilder onSQL={setCustomSQL}/> : <>
+                {cat?.templates && Object.keys(cat.templates).length > 1 && (
+                  <div style={{ padding:"12px 18px", borderBottom:`1px solid ${C.border}`, display:"flex", flexDirection:"column", gap:6 }}>
+                    <span style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em"}}>Query Type</span>
+                    {Object.entries(cat.templates).map(([key,t])=>(
+                      <button key={key} onClick={()=>setActiveTpl(key)} style={{
+                        textAlign:"left",padding:"8px 12px",borderRadius:6,
+                        border:activeTpl===key?`1.5px solid ${C.accent}`:`1px solid ${C.border}`,
+                        background:activeTpl===key?C.accent+"10":C.card,cursor:"pointer",
+                      }}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <span style={{fontSize:13,fontWeight:600,color:activeTpl===key?C.accent:C.text}}>{t.name}</span>
+                          {t.heavy && <Badge color={C.warn}>Heavy</Badge>}
+                        </div>
+                        <div style={{fontSize:11,color:C.muted,marginTop:2}}>{t.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <FilterPanel filters={tpl?.filters} values={filters} onChange={(k,v)=>setFilters(p=>({...p,[k]:v}))} />
+              </>}
             </div>
-            {isAI ? <AIAssistant onResult={setAiSQL}/> : <>
-              {cat?.templates && Object.keys(cat.templates).length > 1 && (
-                <div style={{ padding:"12px 18px", borderBottom:`1px solid ${C.border}`, display:"flex", flexDirection:"column", gap:6 }}>
-                  <span style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em"}}>Query Type</span>
-                  {Object.entries(cat.templates).map(([key,t])=>(
-                    <button key={key} onClick={()=>setActiveTpl(key)} style={{
-                      textAlign:"left",padding:"8px 12px",borderRadius:6,
-                      border:activeTpl===key?`1.5px solid ${C.accent}`:`1px solid ${C.border}`,
-                      background:activeTpl===key?C.accent+"10":C.card,cursor:"pointer",transition:"all .15s",
-                    }}>
-                      <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <span style={{fontSize:13,fontWeight:600,color:activeTpl===key?C.accent:C.text}}>{t.name}</span>
-                        {t.heavy && <Badge color={C.warn}>Heavy</Badge>}
+
+            {/* Right Panel */}
+            <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+              {warning && <div style={{padding:"10px 14px",background:C.warn+"15",border:`1.5px solid ${C.warn}40`,borderRadius:8,fontSize:12.5,color:C.warn}}>{warning}</div>}
+              <SQLDisplay sql={sql} name={isAI?"ai_generated":isCustom?"custom_query":(activeTpl||"query")} limitOn={showToggle?limitOn:null} onToggle={showToggle?()=>setLimitOn(p=>!p):null} />
+
+              {/* Quick Reference */}
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
+                <div style={{padding:"14px 16px",borderRadius:10,background:C.card,border:`1.5px solid ${C.border}`}}>
+                  <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>How to use</div>
+                  <div style={{fontSize:12.5,color:C.sub,lineHeight:1.4}}>Copy → Metabase → New Question → Native Query → Run</div>
+                </div>
+                <div style={{padding:"14px 16px",borderRadius:10,background:C.success+"10",border:`1.5px solid ${C.success}30`}}>
+                  <div style={{fontSize:11,fontWeight:600,color:C.success,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>✅ HMO Status</div>
+                  <div style={{fontSize:12.5,color:C.success,lineHeight:1.4}}>-1=Rejected, 0=Pending, 1=Approved</div>
+                </div>
+                <div style={{padding:"14px 16px",borderRadius:10,background:C.blue+"10",border:`1.5px solid ${C.blue}30`}}>
+                  <div style={{fontSize:11,fontWeight:600,color:C.blue,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>💡 Safety</div>
+                  <div style={{fontSize:12.5,color:C.blue,lineHeight:1.4}}>Heavy queries auto-add LIMIT 1000</div>
+                </div>
+              </div>
+
+              {/* Status Reference */}
+              <div style={{background:C.card,borderRadius:10,border:`1.5px solid ${C.border}`,padding:"16px 20px"}}>
+                <div style={{fontSize:12,fontWeight:600,color:C.sub,textTransform:"uppercase",letterSpacing:".05em",marginBottom:12}}>🔑 Status Reference</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+                  {Object.entries(STATUS_MAPS).map(([k,m])=>(
+                    <div key={k}>
+                      <div style={{fontSize:12,fontWeight:600,color:C.text,marginBottom:6}}>{m.label}</div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                        {Object.entries(m.values).map(([val,label])=>(
+                          <span key={val} style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:500,background:C.elevated,color:C.sub,border:`1px solid ${C.border}`,fontFamily:"JetBrains Mono,monospace"}}>{val} = {label}</span>
+                        ))}
                       </div>
-                      <div style={{fontSize:11,color:C.muted,marginTop:2}}>{t.desc}</div>
-                    </button>
+                    </div>
                   ))}
                 </div>
-              )}
-              <FilterPanel filters={tpl?.filters} values={filters} onChange={(k,v)=>setFilters(p=>({...p,[k]:v}))} />
-            </>}
-          </div>
-
-          {/* Right Panel */}
-          <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-            {warning && <div style={{padding:"10px 14px",background:C.warn+"15",border:`1.5px solid ${C.warn}40`,borderRadius:8,fontSize:12.5,color:C.warn,lineHeight:1.4}}>{warning}</div>}
-            <SQLDisplay sql={sql} name={isAI?"ai_generated":(activeTpl||"query")} limitOn={showToggle?limitOn:null} onToggle={showToggle?()=>setLimitOn(p=>!p):null} />
-
-            {/* Quick Reference Cards */}
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
-              <div style={{padding:"14px 16px",borderRadius:10,background:C.card,border:`1.5px solid ${C.border}`}}>
-                <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>How to use</div>
-                <div style={{fontSize:12.5,color:C.sub,lineHeight:1.4}}>Copy → Metabase → New Question → Native Query → Run</div>
-              </div>
-              <div style={{padding:"14px 16px",borderRadius:10,background:C.success+"10",border:`1.5px solid ${C.success}30`}}>
-                <div style={{fontSize:11,fontWeight:600,color:C.success,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>✅ HMO Status</div>
-                <div style={{fontSize:12.5,color:C.success,lineHeight:1.4}}>-1=Rejected, 0=Pending, 1=Approved</div>
-              </div>
-              <div style={{padding:"14px 16px",borderRadius:10,background:C.blue+"10",border:`1.5px solid ${C.blue}30`}}>
-                <div style={{fontSize:11,fontWeight:600,color:C.blue,textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>💡 Safety</div>
-                <div style={{fontSize:12.5,color:C.blue,lineHeight:1.4}}>Heavy queries auto-add LIMIT 1000</div>
-              </div>
-            </div>
-
-            {/* Status Reference */}
-            <div style={{background:C.card,borderRadius:10,border:`1.5px solid ${C.border}`,padding:"16px 20px"}}>
-              <div style={{fontSize:12,fontWeight:600,color:C.sub,textTransform:"uppercase",letterSpacing:".05em",marginBottom:12}}>🔑 Status Reference (Confirmed)</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-                {Object.entries(STATUS_MAPS).map(([k,m])=>(
-                  <div key={k}>
-                    <div style={{fontSize:12,fontWeight:600,color:C.text,marginBottom:6}}>{m.label}</div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                      {Object.entries(m.values).map(([val,label])=>(
-                        <span key={val} style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:500,background:C.elevated,color:C.sub,border:`1px solid ${C.border}`,fontFamily:"JetBrains Mono,monospace"}}>{val} = {label}</span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           </div>
