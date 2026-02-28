@@ -1,6 +1,3 @@
-// File: app/api/generate-sql/route.ts
-// Drop this file into your claims-dashboard project at: app/api/generate-sql/route.ts
-//
 // Required env var in Vercel dashboard (Settings → Environment Variables):
 //   ANTHROPIC_API_KEY = sk-ant-...  (get from console.anthropic.com)
 //
@@ -32,11 +29,11 @@ DATABASE SCHEMA:
    - id (PK), claim_id (FK→claims), care_id (FK→cares), tariff_id (FK→provider_tariffs)
    - description, qty, amount (billed), unit_price_billed, unit_price_approved
    - approved_amount, approved_qty, hmo_approved (tinyint)
-   - comment_id (FK→claim_item_comments), provider_comment
+   - comment_id (FK→claim_item_comments), provider_comment (mediumtext)
    - drug_unit_qty, drug_frequency, drug_duration
    - auto_vet_amount, auto_vet_qty, auto_vet_comments (JSON)
    - co_payment_amount, co_payment_value, prescription_id, hmo_erp_id
-   - meta (JSON), dispute (JSON)
+   - meta (JSON), dispute (longtext)
 
 3. provider_tariffs (18.9M rows) - Pricing/tariff data
    - id (PK), hmo_id (FK→hmos), provider_id (FK→providers), care_id (FK→cares)
@@ -112,6 +109,33 @@ RULES:
 - ERP IDs for Uganda: hmo_erp_id LIKE 'UG%', sort by CAST(SUBSTRING(hmo_erp_id, 3) AS UNSIGNED)
 - Always include a sensible ORDER BY (newest first by default)
 - For JSON extraction: JSON_UNQUOTE(JSON_EXTRACT(column, '$.path'))
+
+COMMENT FIELD RULES (CRITICAL — read carefully before generating any comment-related query):
+- "vetting comments", "auto-vet comments", "AI comments" → use claim_items.auto_vet_comments (JSON column)
+  To search text inside this JSON field: LOWER(CAST(ci.auto_vet_comments AS CHAR)) LIKE '%keyword%'
+  Always also add: ci.auto_vet_comments IS NOT NULL
+- "provider comment", "provider's note" → use claim_items.provider_comment (mediumtext)
+  Search: LOWER(ci.provider_comment) LIKE '%keyword%'
+- "dispute", "appeal" → use claim_items.dispute (longtext)
+  Search: LOWER(ci.dispute) LIKE '%keyword%'
+- "HMO comment", "reviewer comment", "item comment" → use claim_item_comments.name (text)
+  Requires JOIN: claim_items.comment_id = claim_item_comments.id
+  Search: LOWER(cic.name) LIKE '%keyword%'
+- If the user just says "comments" without specifying which field, DEFAULT to claim_items.auto_vet_comments
+
+HMO FILTERING RULES (CRITICAL):
+- ALWAYS filter HMO via claims.hmo_id (the claims table), even when the base table is claim_items or another child table. Join to claims first, then filter c.hmo_id.
+- NEVER filter HMO via claim_item_comments.hmo_id or any other related table's hmo_id column.
+- hmo_id values are ALWAYS positive integers. If the user provides a negative number like -73, use the absolute value (73). HMO IDs are never negative.
+
+DYNAMIC DATE RULES (CRITICAL):
+- "beginning of this year" or "start of this year" or "since January" → DATE_FORMAT(CURDATE(), '%Y-01-01')
+- "this month" or "start of this month" → DATE_FORMAT(CURDATE(), '%Y-%m-01')
+- "today" → CURDATE()
+- "last 30 days" → DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+- "last N days" → DATE_SUB(CURDATE(), INTERVAL N DAY)
+- "yesterday" → DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+- NEVER hardcode a specific year like '2024-01-01' or '2026-01-01'. Always use CURDATE()-based expressions so the query stays correct as time passes.
 
 IMPORTANT: Return ONLY the SQL query. No markdown, no explanation, no backtick fences.`;
 
