@@ -99,9 +99,10 @@ COMMON JOIN PATTERNS:
 RULES:
 - Always use backticks for reserved words and column names
 - Use LEFT JOINs unless inner join is explicitly needed
-- Always add LIMIT 1000 unless the user asks for aggregation (COUNT/SUM/etc) or explicitly says "all rows"
+- Do NOT add LIMIT unless the user explicitly asks for a limit or says "top N" or "first N". Let the user decide how many rows they want.
 - Use aliases for readability
 - Date filters: use >= start AND < end pattern (never BETWEEN, never 23:59:59)
+- For all datetime/timestamp columns in SELECT, wrap them in DATE_FORMAT(column, '%Y-%m-%d %H:%i:%s') to produce clean readable output (e.g. '2026-01-16 07:06:19' instead of '2026-01-16T07:06:19'). Apply this to columns like created_at, updated_at, submitted_at, vetted_at, paid_at, synced_at, returned_at, encounter_date, admission_start, admission_end, etc.
 - For medications: cares.type_id = 1
 - For V2 cares: cares.cve_version = 2
 - Unflagged tariffs: provider_tariffs.flagged_as_correct_at IS NULL
