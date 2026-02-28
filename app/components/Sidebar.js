@@ -24,15 +24,21 @@ export default function Sidebar() {
       borderRight: `1px solid ${C.border}`, display: "flex",
       flexDirection: "column", position: "fixed", top: 0, left: 0, zIndex: 50,
     }}>
-      {/* Brand */}
+      {/* Brand — Curacel Logo */}
       <div style={{ padding: "20px 18px 16px", borderBottom: `1px solid ${C.border}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 8,
-            background: `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, fontWeight: 700, color: C.bg,
-          }}>C</div>
+          {/* ✅ Improvement #5: Curacel logo replaces the green "C" box */}
+          <img
+            src="/curacel-logo.png"
+            alt="Curacel"
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              objectFit: "contain",
+              background: "transparent",
+            }}
+          />
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.text, lineHeight: 1.2 }}>Claims Intel</div>
             <div style={{ fontSize: 10, color: C.muted, fontWeight: 500 }}>Curacel Health Ops</div>
@@ -89,7 +95,7 @@ export default function Sidebar() {
 
       {/* Footer */}
       <div style={{ padding: "12px 18px", borderTop: `1px solid ${C.border}`, fontSize: 10, color: C.muted }}>
-        v3 · Health Ops Tools
+        v3.1 · Health Ops Tools
       </div>
     </aside>
   );
